@@ -53,10 +53,6 @@ func main() {
 	}
 	defer st.Close()
 
-	interval, err := time.ParseDuration(env("REFRESH_INTERVAL", "6h"))
-	if err != nil || interval < time.Minute {
-		log.Fatalf("REFRESH_INTERVAL must be a duration of at least 1m (got %q)", os.Getenv("REFRESH_INTERVAL"))
-	}
 	allowPrivate, _ := strconv.ParseBool(os.Getenv("ALLOW_PRIVATE"))
 
 	sub, err := fs.Sub(webFS, "web")
@@ -71,7 +67,6 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go app.RefreshLoop(ctx, interval)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -87,7 +82,7 @@ func main() {
 		defer cancel()
 		srv.Shutdown(sctx)
 	}()
-	log.Printf("pricetrack %s listening on %s (refresh every %s)", version, addr, interval)
+	log.Printf("pricetrack %s listening on %s (updates run only when requested)", version, addr)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

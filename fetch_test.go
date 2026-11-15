@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -117,5 +121,30 @@ func TestConditionalPrices(t *testing.T) {
 	plain, _ := ParsePage(`<meta property="product:price:amount" content="40.00"><div>Members price <span>£1.00</span></div>`)
 	if plain.Price != 40 || plain.Caveat != "" {
 		t.Errorf("implausible conditional price should be ignored: %+v", plain)
+	}
+}
+
+func TestFetchUsesVisitorBrowserIdentity(t *testing.T) {
+	var gotUA, gotLang string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA, gotLang = r.Header.Get("User-Agent"), r.Header.Get("Accept-Language")
+		w.Write([]byte(`<meta property="product:price:amount" content="9.99">`))
+	}))
+	defer srv.Close()
+
+	in := httptest.NewRequest("GET", "/", nil)
+	in.Header.Set("User-Agent", "VisitorBrowser/1.0")
+	in.Header.Set("Accept-Language", "en-AU")
+	ctx := WithClient(context.Background(), in)
+	if _, err := NewFetcher(true).Fetch(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if gotUA != "VisitorBrowser/1.0" || gotLang != "en-AU" {
+		t.Errorf("got UA %q lang %q", gotUA, gotLang)
+	}
+	// no visitor context -> generic browser identity, never Go's default
+	NewFetcher(true).Fetch(context.Background(), srv.URL)
+	if !strings.HasPrefix(gotUA, "Mozilla/5.0") {
+		t.Errorf("fallback UA %q", gotUA)
 	}
 }

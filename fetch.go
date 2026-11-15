@@ -27,6 +27,35 @@ type Result struct {
 	StdPrice float64 // cheapest unconditional price when Price carries a caveat
 }
 
+type clientKey struct{}
+
+// Browser identity headers forwarded to merchants so requests look like the
+// visitor's own browser rather than a bot.
+var clientHeaders = []string{"User-Agent", "Accept-Language", "Sec-CH-UA", "Sec-CH-UA-Mobile", "Sec-CH-UA-Platform"}
+
+// WithClient records the visitor's browser identity on the context.
+func WithClient(ctx context.Context, r *http.Request) context.Context {
+	h := http.Header{}
+	for _, k := range clientHeaders {
+		if v := r.Header.Get(k); v != "" {
+			h.Set(k, v)
+		}
+	}
+	return context.WithValue(ctx, clientKey{}, h)
+}
+
+// applyClient sets the visitor's browser headers on req, falling back to a
+// generic browser identity when none was captured.
+func applyClient(ctx context.Context, req *http.Request) {
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	if h, ok := ctx.Value(clientKey{}).(http.Header); ok {
+		for k, v := range h {
+			req.Header[k] = v
+		}
+	}
+}
+
 // Fetcher downloads product pages and extracts prices.
 type Fetcher struct{ client *http.Client }
 
@@ -72,9 +101,8 @@ func (f *Fetcher) Fetch(ctx context.Context, u string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+	applyClient(ctx, req)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	resp, err := f.client.Do(req)
 	if err != nil {
 		return nil, err

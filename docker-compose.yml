@@ -7,7 +7,6 @@ services:
     volumes:
       - pricetrack-data:/data
     environment:
-      REFRESH_INTERVAL: 6h
       # AUTH_USER: me
       # AUTH_PASS: change-me
     restart: unless-stopped

@@ -56,6 +56,7 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("GET /static/", a.static)
 	mux.HandleFunc("GET /{$}", a.index)
 	mux.HandleFunc("POST /items", a.add)
+	mux.HandleFunc("POST /refresh", a.refreshAll)
 	mux.HandleFunc("POST /items/{id}/refresh", a.refresh)
 	mux.HandleFunc("POST /items/{id}/target", a.target)
 	mux.HandleFunc("POST /items/{id}/delete", a.remove)
@@ -109,7 +110,9 @@ func (a *App) secure(next http.Handler) http.Handler {
 			http.Error(w, "cross-origin request blocked", http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Remember the visitor's browser identity so merchant requests made on
+		// their behalf look like their own browser.
+		next.ServeHTTP(w, r.WithContext(WithClient(r.Context(), r)))
 	})
 }
 
@@ -429,20 +432,45 @@ func (a *App) refreshItem(ctx context.Context, id int64) {
 }
 
 // discover searches the web for retailers selling the item and stores their listings.
-func (a *App) discover(ctx context.Context, id int64) {
+// begin marks an item as busy; it returns false if an update is already running.
+func (a *App) begin(id int64) bool {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.searching[id] {
-		a.mu.Unlock()
-		return
+		return false
 	}
 	a.searching[id] = true
-	a.mu.Unlock()
-	defer func() {
-		a.mu.Lock()
-		delete(a.searching, id)
-		a.mu.Unlock()
-	}()
+	return true
+}
 
+func (a *App) end(id int64) {
+	a.mu.Lock()
+	delete(a.searching, id)
+	a.mu.Unlock()
+}
+
+// update refreshes known listings and/or searches for more retailers. It only
+// ever runs because a person asked for it.
+func (a *App) update(ctx context.Context, id int64, refresh, search bool) {
+	if !a.begin(id) {
+		return
+	}
+	defer a.end(id)
+	if refresh {
+		a.refreshItem(ctx, id)
+	}
+	if search {
+		a.discover(ctx, id)
+	}
+}
+
+// background detaches work from the request's lifetime but keeps its values
+// (the visitor's browser identity).
+func background(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), 4*time.Minute)
+}
+
+func (a *App) discover(ctx context.Context, id int64) {
 	it, err := a.st.GetItem(id)
 	if err != nil {
 		return
@@ -466,11 +494,11 @@ func (a *App) discover(ctx context.Context, id int64) {
 	a.st.MarkSearched(id, serr)
 }
 
-func (a *App) startDiscover(id int64) {
+func (a *App) startUpdate(r *http.Request, id int64, refresh bool) {
+	ctx, cancel := background(r)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		a.discover(ctx, id)
+		a.update(ctx, id, refresh, true)
 	}()
 }
 
@@ -499,7 +527,7 @@ func (a *App) add(w http.ResponseWriter, r *http.Request) {
 			redirect(w, r, "err", err.Error())
 			return
 		}
-		a.startDiscover(id)
+		a.startUpdate(r, id, false)
 		redirect(w, r, "msg", "Searching retailers for it…")
 		return
 	}
@@ -538,7 +566,7 @@ func (a *App) add(w http.ResponseWriter, r *http.Request) {
 		a.st.SetItemImage(id, res.Image)
 	}
 	a.st.RecordBest(id)
-	a.startDiscover(id)
+	a.startUpdate(r, id, false)
 	redirect(w, r, "msg", "Added — now searching other retailers…")
 }
 
@@ -559,13 +587,28 @@ func (a *App) refresh(w http.ResponseWriter, r *http.Request) {
 	if it == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-		a.refreshItem(ctx, it.ID)
-		a.discover(ctx, it.ID)
-	}()
+	a.startUpdate(r, it.ID, true)
 	redirect(w, r, "msg", "Refreshing prices and searching for more retailers…")
+}
+
+// refreshAll refreshes every product, one after another, when the user asks.
+func (a *App) refreshAll(w http.ResponseWriter, r *http.Request) {
+	items, err := a.st.ListItems()
+	if err != nil {
+		redirect(w, r, "err", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Minute)
+	go func() {
+		defer cancel()
+		for i, it := range items {
+			if i > 0 {
+				time.Sleep(2 * time.Second) // be polite to merchants
+			}
+			a.update(ctx, it.ID, true, true)
+		}
+	}()
+	redirect(w, r, "msg", "Refreshing everything…")
 }
 
 func (a *App) target(w http.ResponseWriter, r *http.Request) {
@@ -704,36 +747,6 @@ func (a *App) apiList(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
-}
-
-// RefreshLoop re-checks every item on the given interval and re-discovers
-// retailers for items not searched in the last day.
-func (a *App) RefreshLoop(ctx context.Context, every time.Duration) {
-	t := time.NewTicker(every)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		items, err := a.st.ListItems()
-		if err != nil {
-			log.Printf("refresh list: %v", err)
-			continue
-		}
-		for _, it := range items {
-			a.refreshItem(ctx, it.ID)
-			if time.Since(it.LastSearched) > 24*time.Hour {
-				a.discover(ctx, it.ID)
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(3 * time.Second): // be polite to merchants
-			}
-		}
-	}
 }
 
 // ---- template helpers ----

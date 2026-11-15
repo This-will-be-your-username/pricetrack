@@ -31,6 +31,7 @@
     <div><b>{{.Total}}</b><span>products</span></div>
     <div><b>{{.Retailers}}</b><span>retailer prices</span></div>
     <div><b>{{.Hits}}</b><span>at target</span></div>
+    <form class="refresh-all" method="post" action="/refresh" data-confirm="Re-check every product and search for more retailers?"><button class="ghost">↻ Refresh all</button></form>
   </section>
 
   <section class="grid">
@@ -111,7 +112,7 @@
   </section>
   {{end}}
 </main>
-<footer class="wrap foot-note">Prices are re-checked automatically in the background · <a href="/api/items">JSON</a></footer>
+<footer class="wrap foot-note">Prices update only when you add or refresh a product · <a href="/api/items">JSON</a></footer>
 <script src="/static/app.js" defer></script>
 </body>
 </html>

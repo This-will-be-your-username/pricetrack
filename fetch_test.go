@@ -125,9 +125,10 @@ func TestConditionalPrices(t *testing.T) {
 }
 
 func TestFetchUsesVisitorBrowserIdentity(t *testing.T) {
-	var gotUA, gotLang string
+	var gotUA, gotLang, gotRef, gotDest string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUA, gotLang = r.Header.Get("User-Agent"), r.Header.Get("Accept-Language")
+		gotRef, gotDest = r.Header.Get("Referer"), r.Header.Get("Sec-Fetch-Dest")
 		w.Write([]byte(`<meta property="product:price:amount" content="9.99">`))
 	}))
 	defer srv.Close()
@@ -141,6 +142,9 @@ func TestFetchUsesVisitorBrowserIdentity(t *testing.T) {
 	}
 	if gotUA != "VisitorBrowser/1.0" || gotLang != "en-AU" {
 		t.Errorf("got UA %q lang %q", gotUA, gotLang)
+	}
+	if gotRef != "https://www.google.com/" || gotDest != "document" {
+		t.Errorf("referer %q dest %q", gotRef, gotDest)
 	}
 	// no visitor context -> generic browser identity, never Go's default
 	NewFetcher(true).Fetch(context.Background(), srv.URL)

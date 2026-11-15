@@ -56,6 +56,20 @@ func applyClient(ctx context.Context, req *http.Request) {
 	}
 }
 
+// applyNavigation adds the headers a browser sends when someone follows a link
+// from a Google search result to a page, as in a normal shopping journey.
+func applyNavigation(req *http.Request) {
+	h := req.Header
+	h.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+	h.Set("Referer", "https://www.google.com/") // modern browsers send only the origin cross-site
+	h.Set("Upgrade-Insecure-Requests", "1")
+	h.Set("Sec-Fetch-Dest", "document")
+	h.Set("Sec-Fetch-Mode", "navigate")
+	h.Set("Sec-Fetch-Site", "cross-site")
+	h.Set("Sec-Fetch-User", "?1")
+	h.Set("Cache-Control", "max-age=0")
+}
+
 // Fetcher downloads product pages and extracts prices.
 type Fetcher struct{ client *http.Client }
 
@@ -102,7 +116,7 @@ func (f *Fetcher) Fetch(ctx context.Context, u string) (*Result, error) {
 		return nil, err
 	}
 	applyClient(ctx, req)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+	applyNavigation(req)
 	resp, err := f.client.Do(req)
 	if err != nil {
 		return nil, err

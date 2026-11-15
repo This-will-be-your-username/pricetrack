@@ -2,7 +2,7 @@
 
 A small, self-hosted tool that finds the cheapest retailer for a product. Add a product name, model number or link; PriceTrack searches the web for stores that sell it in your region, compares their prices, and keeps watching for the best deal.
 
-- Nothing runs in the background: prices update only when you add a product, or press refresh (requests to retailers use your own browser's User-Agent)
+- Nothing runs in the background: prices update only when you add a product, or press refresh (requests to retailers carry your own browser's User-Agent and a Google referrer)
 - Single static binary, no CGO, embedded UI and SQLite (pure Go)
 - Linux, macOS, Windows (amd64 + arm64) and Docker (amd64 + arm64)
 - Extracts prices from schema.org JSON-LD, OpenGraph/product meta tags and common storefront markup

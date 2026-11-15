@@ -71,3 +71,25 @@ func TestRegionAllows(t *testing.T) {
 		t.Error("unknown niche shop should be kept")
 	}
 }
+
+func TestRelevant(t *testing.T) {
+	q := "Logitech MX Master 3S"
+	if !relevant(q, "Logitech MX Master 3S Wireless Mouse - JB Hi-Fi") {
+		t.Error("should match")
+	}
+	if relevant(q, "Logitech MX Master 3 mouse") {
+		t.Error("different model should not match")
+	}
+	if relevant(q, "Logitech MX Keys keyboard 3S") {
+		t.Error("different product should not match")
+	}
+}
+
+func TestLooksLikeURL(t *testing.T) {
+	for in, want := range map[string]bool{"https://a.com/x": true, "www.a.com": true, "a.com/p/1": true,
+		"WH-1000XM5": false, "rtx 4070": false, "sony wh-1000xm5.5": false} {
+		if got := looksLikeURL(in); got != want {
+			t.Errorf("%q: got %v", in, got)
+		}
+	}
+}

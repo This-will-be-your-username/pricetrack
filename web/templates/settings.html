@@ -24,7 +24,7 @@
   <h1 class="page-title">Settings</h1>
   <form class="panel" method="post" action="/settings">
     <label for="region"><b>Region</b></label>
-    <p class="muted-p">Only retailers that serve your region can be added, and prices default to its currency.</p>
+    <p class="muted-p">Retailer searches are limited to stores serving your region, and prices default to its currency.</p>
     <div class="row">
       <select id="region" name="region">
         <option value="" {{if not .Current}}selected{{end}} disabled>Select a region…</option>

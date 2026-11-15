@@ -221,8 +221,8 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 		cands = append(cands, c)
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].rank < cands[j].rank })
-	if len(cands) > 12 {
-		cands = cands[:12]
+	if len(cands) > 15 {
+		cands = cands[:15]
 	}
 
 	// Verify concurrently: keep only pages where we can read a price.
@@ -238,6 +238,9 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 			defer cancel()
 			res, _ := a.fetch.Fetch(fctx, c.URL)
 			if res == nil || res.Price <= 0 {
+				return
+			}
+			if !relevant(query, res.Name+" "+c.Title+" "+c.URL) {
 				return
 			}
 			c.Price, c.Currency = res.Price, res.Currency
@@ -260,6 +263,7 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 			offers = append(offers, c.Offer)
 		}
 	}
+	offers = dropOutliers(offers)
 	sort.SliceStable(offers, func(i, j int) bool {
 		if offers[i].Currency == offers[j].Currency {
 			return offers[i].Price < offers[j].Price
@@ -267,4 +271,57 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 		return offers[i].InRegion && !offers[j].InRegion
 	})
 	return offers, nil
+}
+
+var reNonAlnum = regexp.MustCompile("[^a-z0-9]+")
+
+// relevant checks that a page looks like it is about the product searched for:
+// every model-number-like token (contains a digit) must appear, and most of the
+// remaining words must too. This keeps accessories and unrelated products out.
+func relevant(query, text string) bool {
+	hay := strings.ToLower(text)
+	flat := reNonAlnum.ReplaceAllString(hay, "")
+	words := " " + reNonAlnum.ReplaceAllString(hay, " ") + " "
+	var plain, plainHit int
+	for _, tok := range strings.Fields(reNonAlnum.ReplaceAllString(strings.ToLower(query), " ")) {
+		hasDigit := strings.ContainsAny(tok, "0123456789")
+		switch {
+		case hasDigit:
+			if !strings.Contains(flat, tok) {
+				return false
+			}
+		case len(tok) >= 3 && !stopWords[tok]:
+			plain++
+			if strings.Contains(words, " "+tok) {
+				plainHit++
+			}
+		}
+	}
+	return plain == 0 || plainHit*10 >= plain*6
+}
+
+var stopWords = map[string]bool{"the": true, "and": true, "for": true, "with": true, "buy": true, "online": true, "new": true}
+
+// dropOutliers removes offers priced far below the median (typically cases,
+// spare parts or accessories that slipped through).
+func dropOutliers(offers []Offer) []Offer {
+	byCur := map[string][]float64{}
+	for _, o := range offers {
+		byCur[o.Currency] = append(byCur[o.Currency], o.Price)
+	}
+	med := map[string]float64{}
+	for c, ps := range byCur {
+		if len(ps) >= 3 {
+			sort.Float64s(ps)
+			med[c] = ps[len(ps)/2]
+		}
+	}
+	out := offers[:0:0]
+	for _, o := range offers {
+		if m, ok := med[o.Currency]; ok && o.Price < 0.4*m {
+			continue
+		}
+		out = append(out, o)
+	}
+	return out
 }

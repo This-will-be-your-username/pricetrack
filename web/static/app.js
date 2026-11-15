@@ -14,3 +14,8 @@ document.addEventListener('submit', (e) => {
 
 // Drop ?msg= / ?err= from the address bar after showing the flash.
 if (location.search) history.replaceState(null, '', location.pathname);
+
+// While a background retailer search is running, poll by reloading.
+if (document.body.hasAttribute('data-searching')) {
+  setTimeout(() => location.reload(), 4000);
+}

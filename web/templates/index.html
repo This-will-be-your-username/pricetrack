@@ -8,76 +8,95 @@
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body {{if .Searching}}data-searching{{end}}>
 <header class="top">
   <div class="wrap bar">
     <a class="brand" href="/"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>PriceTrack</a>
-    <form class="add" method="post" action="/products" data-busy="Fetching…">
-      <input class="url" type="text" name="url" placeholder="Paste a product link…" autocomplete="off" required>
+    <form class="add" method="post" action="/items" data-busy="Adding…">
+      <input class="url" type="text" name="q" placeholder="Product name, model number or link…" autocomplete="off" required>
       <input class="tgt" type="text" name="target" inputmode="decimal" placeholder="Target {{.Symbol}}" autocomplete="off" aria-label="Target price">
       <button type="submit">Track</button>
     </form>
-    <a class="region-link" href="/find">Find stores</a>
     <a class="region-link" href="/settings" title="Settings">{{if .Region.Code}}{{if eq .Region.Code "ANY"}}🌐 Worldwide{{else}}{{.Region.Code}}{{end}}{{else}}Settings{{end}} ⚙</a>
   </div>
 </header>
 
 <main class="wrap">
-  {{if not .Region.Code}}<div class="flash info" role="status">Choose your region to only track stores that ship to you. <a href="/settings">Open settings</a></div>{{end}}
+  {{if not .Region.Code}}<div class="flash info" role="status">Choose your region so we only search stores that serve you. <a href="/settings">Open settings</a></div>{{end}}
   {{if .Msg}}<div class="flash ok" role="status">{{.Msg}}</div>{{end}}
   {{if .Err}}<div class="flash err" role="alert">{{.Err}}</div>{{end}}
 
-  {{if .Products}}
+  {{if .Items}}
   <section class="stats">
-    <div><b>{{.Total}}</b><span>tracked</span></div>
-    <div><b>{{.Drops}}</b><span>price drops</span></div>
+    <div><b>{{.Total}}</b><span>products</span></div>
+    <div><b>{{.Retailers}}</b><span>retailer prices</span></div>
     <div><b>{{.Hits}}</b><span>at target</span></div>
   </section>
 
   <section class="grid">
-  {{range .Products}}
+  {{range .Items}}
     <article class="card">
       <div class="top-row">
-        {{if .Image}}<img class="thumb" src="{{.Image}}" alt="" loading="lazy" referrerpolicy="no-referrer">{{else}}<div class="thumb ph">{{if .Merchant}}{{slice .Merchant 0 1}}{{else}}?{{end}}</div>{{end}}
+        {{if .Image}}<img class="thumb" src="{{.Image}}" alt="" loading="lazy" referrerpolicy="no-referrer">{{else}}<div class="thumb ph">{{initial .Name}}</div>{{end}}
         <div class="meta">
-          <span class="chip">{{.Merchant}}</span>
-          <a class="name" href="{{.URL}}" target="_blank" rel="noopener noreferrer" title="{{.Name}}">{{.Name}}</a>
+          <span class="name" title="{{.Name}}">{{.Name}}</span>
+          <span class="muted">{{if .Priced}}{{.Priced}} retailer{{if ne .Priced 1}}s{{end}} compared{{else if .Searching}}Searching…{{else}}No prices yet{{end}}</span>
         </div>
       </div>
 
-      <div class="price-row">
-        {{if .HasPrice}}
-          <div class="price">{{money .Currency .Price}}</div>
+      {{if .Best}}
+      <div class="best">
+        <div class="price-row">
+          <div class="price">{{money .Currency .Best.Price}}</div>
           {{if .HasDelta}}
             {{if eq .Trend "down"}}<span class="pill down">↓ {{money .Currency (abs .Delta)}} · {{printf "%.0f" (abs .DeltaPct)}}%</span>
             {{else if eq .Trend "up"}}<span class="pill up">↑ {{money .Currency (abs .Delta)}} · {{printf "%.0f" (abs .DeltaPct)}}%</span>{{end}}
           {{end}}
-        {{else}}
-          <div class="price none">—</div>
-        {{end}}
+        </div>
+        <a class="buy" href="{{.Best.URL}}" target="_blank" rel="noopener noreferrer">Cheapest at <b>{{.Best.Retailer}}</b> ↗</a>
       </div>
+      {{else if .Searching}}
+      <div class="searching"><span class="dot"></span>Looking for retailers…</div>
+      {{else}}
+      <div class="price none">—</div>
+      {{end}}
 
       <div class="badges">
         {{if .TargetHit}}<span class="badge good">Target hit</span>{{end}}
-        {{if and .Lowest .HasDelta}}<span class="badge">Lowest seen</span>{{end}}
-        {{if .LastError}}<span class="badge bad" title="{{.LastError}}">Check failed</span>{{end}}
+        {{if gt .Savings 0.0}}<span class="badge">Save up to {{money .Currency .Savings}} by shopping around</span>{{end}}
       </div>
 
       {{if .Spark}}
-      <svg class="spark {{.Trend}}" viewBox="0 0 100 30" preserveAspectRatio="none" aria-label="Price history"><polyline points="{{.Spark}}" fill="none" vector-effect="non-scaling-stroke"/></svg>
-      {{else}}<div class="spark empty">History builds as prices change</div>{{end}}
+      <svg class="spark {{.Trend}}" viewBox="0 0 100 30" preserveAspectRatio="none" aria-label="Best price history"><polyline points="{{.Spark}}" fill="none" vector-effect="non-scaling-stroke"/></svg>
+      {{end}}
 
-      {{if .LastError}}<p class="errline">{{.LastError}}</p>{{end}}
+      {{if and .LastError (not .Searching)}}<p class="errline">{{.LastError}}</p>{{end}}
+
+      <details class="retailers-box">
+        <summary>Retailers ({{len .Listings}})</summary>
+        <ul class="rlist">
+          {{range .Listings}}
+          <li class="{{if .Best}}best-row{{end}}">
+            <a href="{{.URL}}" target="_blank" rel="noopener noreferrer" title="{{.Title}}">{{if .Retailer}}{{.Retailer}}{{else}}Link{{end}}</a>
+            {{if .HasPrice}}<span class="rp">{{money .Currency .Price}}</span>{{else}}<span class="rp none" title="{{.LastError}}">no price</span>{{end}}
+            <form method="post" action="/listings/{{.ID}}/delete" data-confirm="Remove this retailer?"><button class="icon danger" title="Remove retailer" aria-label="Remove retailer">✕</button></form>
+          </li>
+          {{end}}
+        </ul>
+        <form class="linkform" method="post" action="/items/{{.ID}}/links" data-busy="…">
+          <input type="text" name="url" placeholder="Add a retailer link…" autocomplete="off" required>
+          <button class="ghost">Add</button>
+        </form>
+      </details>
 
       <div class="foot">
-        <span class="muted">Checked {{ago .LastChecked}}</span>
-        <form class="tform" method="post" action="/products/{{.ID}}/target">
+        <span class="muted">{{if .Searching}}Searching…{{else}}Updated {{ago .LastSearched}}{{end}}</span>
+        <form class="tform" method="post" action="/items/{{.ID}}/target">
           <input type="text" name="target" inputmode="decimal" value="{{if .HasTarget}}{{printf "%.2f" .Target}}{{end}}" placeholder="target" aria-label="Target price">
           <button class="ghost" title="Save target">Set</button>
         </form>
-        <a class="icon-link" href="/find?q={{.Name}}" title="Find other retailers" aria-label="Find other retailers">⌕</a>
-        <form method="post" action="/products/{{.ID}}/refresh" data-busy="…"><button class="icon" title="Refresh now" aria-label="Refresh now">↻</button></form>
-        <form method="post" action="/products/{{.ID}}/delete" data-confirm="Stop tracking this product?"><button class="icon danger" title="Remove" aria-label="Remove">✕</button></form>
+        <form method="post" action="/items/{{.ID}}/refresh"><button class="icon" title="Refresh prices and search for more retailers" aria-label="Refresh">↻</button></form>
+        <form method="post" action="/items/{{.ID}}/delete" data-confirm="Stop tracking this product?"><button class="icon danger" title="Remove" aria-label="Remove">✕</button></form>
       </div>
     </article>
   {{end}}
@@ -85,12 +104,12 @@
   {{else}}
   <section class="empty">
     <svg viewBox="0 0 24 24" width="44" height="44" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    <h1>Track prices, buy at the right time</h1>
-    <p>Paste a link from Amazon, Walmart, Target, Best Buy, eBay and more.<br>Set an optional target price and we'll flag it when it's reached.</p>
+    <h1>Find the cheapest retailer for anything</h1>
+    <p>Add a product name, model number or a link. We'll search the web for stores that sell it,<br>compare their prices, and keep watching for the best deal.</p>
   </section>
   {{end}}
 </main>
-<footer class="wrap foot-note">Prices are checked automatically in the background · <a href="/api/products">JSON</a></footer>
+<footer class="wrap foot-note">Prices are re-checked automatically in the background · <a href="/api/items">JSON</a></footer>
 <script src="/static/app.js" defer></script>
 </body>
 </html>

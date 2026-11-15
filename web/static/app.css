@@ -133,3 +133,23 @@ select { flex: 1; font: inherit; color: var(--text); background: var(--surface);
 .offer form { margin: 0; }
 .icon-link { color: var(--muted); text-decoration: none; font-size: 17px; padding: 3px 8px; border-radius: 8px; }
 .icon-link:hover { background: var(--chip); color: var(--text); }
+
+.best { display: flex; flex-direction: column; gap: 2px; }
+.buy { font-size: 13px; color: var(--muted); text-decoration: none; }
+.buy b { color: var(--text); } .buy:hover b { color: var(--accent); }
+.searching { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; padding: 10px 0; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.1); } }
+.name { cursor: default; }
+.retailers-box summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); list-style: none; }
+.retailers-box summary::-webkit-details-marker { display: none; }
+.retailers-box summary::before { content: "▸ "; } .retailers-box[open] summary::before { content: "▾ "; }
+.rlist { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.rlist li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 8px; font-size: 14px; }
+.rlist li.best-row { background: var(--good-bg); }
+.rlist a { flex: 1; min-width: 0; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rlist a:hover { color: var(--accent); }
+.rlist form { margin: 0; display: flex; }
+.rp { font-weight: 600; font-variant-numeric: tabular-nums; } .rp.none { color: var(--muted); font-weight: 400; }
+.linkform { display: flex; gap: 6px; margin: 6px 0 0; }
+.linkform input { flex: 1; font-size: 13px; padding: 6px 10px; border-radius: 8px; }

@@ -14,7 +14,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type App struct {
@@ -25,13 +27,17 @@ type App struct {
 	search Searcher
 	user   string
 	pass   string
+
+	mu        sync.Mutex
+	searching map[int64]bool
 }
 
 func NewApp(st *Store, f *Fetcher, web fs.FS, user, pass string) (*App, error) {
 	tpl, err := template.New("").Funcs(template.FuncMap{
-		"money": money,
-		"ago":   ago,
-		"abs":   math.Abs,
+		"money":   money,
+		"ago":     ago,
+		"abs":     math.Abs,
+		"initial": initial,
 	}).ParseFS(web, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -40,7 +46,7 @@ func NewApp(st *Store, f *Fetcher, web fs.FS, user, pass string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{st: st, fetch: f, tpl: tpl, user: user, pass: pass,
+	return &App{st: st, fetch: f, tpl: tpl, user: user, pass: pass, searching: map[int64]bool{},
 		static: http.StripPrefix("/static/", http.FileServerFS(static))}, nil
 }
 
@@ -49,14 +55,15 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	mux.Handle("GET /static/", a.static)
 	mux.HandleFunc("GET /{$}", a.index)
-	mux.HandleFunc("POST /products", a.add)
-	mux.HandleFunc("POST /products/{id}/refresh", a.refresh)
-	mux.HandleFunc("POST /products/{id}/target", a.target)
-	mux.HandleFunc("POST /products/{id}/delete", a.remove)
-	mux.HandleFunc("GET /find", a.find)
+	mux.HandleFunc("POST /items", a.add)
+	mux.HandleFunc("POST /items/{id}/refresh", a.refresh)
+	mux.HandleFunc("POST /items/{id}/target", a.target)
+	mux.HandleFunc("POST /items/{id}/delete", a.remove)
+	mux.HandleFunc("POST /items/{id}/links", a.addLink)
+	mux.HandleFunc("POST /listings/{id}/delete", a.removeListing)
 	mux.HandleFunc("GET /settings", a.settings)
 	mux.HandleFunc("POST /settings", a.saveSettings)
-	mux.HandleFunc("GET /api/products", a.apiList)
+	mux.HandleFunc("GET /api/items", a.apiList)
 	return a.secure(mux)
 }
 
@@ -76,11 +83,8 @@ func sameOrigin(r *http.Request) bool {
 		return true // non-browser client (curl etc.)
 	}
 	u, err := url.Parse(o)
-	if err != nil {
+	if err != nil || u.Host == "" {
 		return false
-	}
-	if u.Host == "" {
-		return false // "null" origin without Sec-Fetch-Site: can't vouch for it
 	}
 	return u.Host == r.Host || u.Host == r.Header.Get("X-Forwarded-Host")
 }
@@ -101,41 +105,15 @@ func (a *App) secure(next http.Handler) http.Handler {
 				return
 			}
 		}
-		// Cheap CSRF guard: state-changing requests must come from our own origin.
-		if r.Method == http.MethodPost {
-			if !sameOrigin(r) {
-				http.Error(w, "cross-origin request blocked", http.StatusForbidden)
-				return
-			}
+		if r.Method == http.MethodPost && !sameOrigin(r) {
+			http.Error(w, "cross-origin request blocked", http.StatusForbidden)
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// ---- view models ----
-
-type ProductView struct {
-	*Product
-	Spark     string // polyline points
-	Trend     string // up | down | flat
-	Delta     float64
-	DeltaPct  float64
-	HasDelta  bool
-	Lowest    bool
-	TargetHit bool
-	Points    int
-}
-
-type IndexData struct {
-	Products []ProductView
-	Total    int
-	Drops    int
-	Hits     int
-	Msg      string
-	Err      string
-	Region   Region // zero Code when unset
-	Symbol   string
-}
+// ---- region ----
 
 // region returns the configured region. set is false until the user picks one.
 func (a *App) region() (rg Region, set bool) {
@@ -143,8 +121,14 @@ func (a *App) region() (rg Region, set bool) {
 	if code == AnyRegion {
 		return Region{Code: AnyRegion, Name: "Worldwide", Currency: "USD"}, true
 	}
-	rg, set = FindRegion(code)
-	return rg, set
+	return FindRegion(code)
+}
+
+func (a *App) defaultCurrency() string {
+	if rg, set := a.region(); set && rg.Currency != "" {
+		return rg.Currency
+	}
+	return "USD"
 }
 
 func symbol(cur string) string {
@@ -152,38 +136,6 @@ func symbol(cur string) string {
 		return s
 	}
 	return cur
-}
-
-type FindData struct {
-	Query    string
-	Searched bool
-	Offers   []Offer
-	Region   Region
-	Err      string
-}
-
-func (a *App) find(w http.ResponseWriter, r *http.Request) {
-	d := FindData{Query: strings.TrimSpace(r.URL.Query().Get("q"))}
-	rg, set := a.region()
-	if set {
-		d.Region = rg
-	} else {
-		rg = Region{Code: AnyRegion}
-	}
-	if d.Query != "" {
-		d.Searched = true
-		ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
-		defer cancel()
-		offers, err := a.FindOffers(ctx, d.Query, rg)
-		if err != nil {
-			d.Err = clip(err.Error())
-		}
-		d.Offers = offers
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := a.tpl.ExecuteTemplate(w, "find.html", d); err != nil {
-		log.Printf("render: %v", err)
-	}
 }
 
 type SettingsData struct {
@@ -200,10 +152,7 @@ func (a *App) settings(w http.ResponseWriter, r *http.Request) {
 	if set {
 		d.Current = rg.Code
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := a.tpl.ExecuteTemplate(w, "settings.html", d); err != nil {
-		log.Printf("render: %v", err)
-	}
+	a.render(w, "settings.html", d)
 }
 
 func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
@@ -219,8 +168,75 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 	redirect(w, r, "msg", "Region saved")
 }
 
-func buildView(p *Product, hist []float64) ProductView {
-	v := ProductView{Product: p, Trend: "flat", Points: len(hist)}
+func (a *App) render(w http.ResponseWriter, name string, data any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := a.tpl.ExecuteTemplate(w, name, data); err != nil {
+		log.Printf("render %s: %v", name, err)
+	}
+}
+
+// ---- view models ----
+
+type ListingView struct {
+	*Listing
+	Best bool
+}
+
+type ItemView struct {
+	*Item
+	Listings  []ListingView
+	Best      *Listing
+	Savings   float64 // gap between cheapest and priciest retailer
+	Spark     string
+	Trend     string // up | down | flat
+	Delta     float64
+	DeltaPct  float64
+	HasDelta  bool
+	TargetHit bool
+	Searching bool
+	Priced    int
+}
+
+type IndexData struct {
+	Items     []ItemView
+	Total     int
+	Retailers int
+	Hits      int
+	Searching bool
+	Msg       string
+	Err       string
+	Region    Region // zero Code when unset
+	Symbol    string
+}
+
+func (a *App) isSearching(id int64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.searching[id]
+}
+
+func (a *App) buildItem(it *Item) (ItemView, error) {
+	ls, err := a.st.ListListings(it.ID)
+	if err != nil {
+		return ItemView{}, err
+	}
+	hist, _ := a.st.History(it.ID)
+	v := ItemView{Item: it, Trend: "flat", Searching: a.isSearching(it.ID)}
+	v.Best = bestOf(it.Currency, ls)
+	hi := 0.0
+	for _, l := range ls {
+		if l.HasPrice {
+			v.Priced++
+			if l.Currency == it.Currency && l.Price > hi {
+				hi = l.Price
+			}
+		}
+		v.Listings = append(v.Listings, ListingView{Listing: l, Best: v.Best != nil && l.ID == v.Best.ID})
+	}
+	if v.Best != nil {
+		v.Savings = hi - v.Best.Price
+		v.TargetHit = it.HasTarget && v.Best.Price <= it.Target
+	}
 	if n := len(hist); n >= 2 {
 		v.Delta = hist[n-1] - hist[n-2]
 		if hist[n-2] != 0 {
@@ -233,15 +249,13 @@ func buildView(p *Product, hist []float64) ProductView {
 		case v.Delta > 0:
 			v.Trend = "up"
 		}
-		lo, hi := hist[0], hist[0]
+		lo, high := hist[0], hist[0]
 		for _, h := range hist {
-			lo, hi = math.Min(lo, h), math.Max(hi, h)
+			lo, high = math.Min(lo, h), math.Max(high, h)
 		}
-		v.Lowest = p.Price <= lo
-		v.Spark = sparkline(hist, lo, hi)
+		v.Spark = sparkline(hist, lo, high)
 	}
-	v.TargetHit = p.HasTarget && p.HasPrice && p.Price <= p.Target
-	return v
+	return v, nil
 }
 
 func sparkline(h []float64, lo, hi float64) string {
@@ -259,39 +273,35 @@ func sparkline(h []float64, lo, hi float64) string {
 }
 
 func (a *App) index(w http.ResponseWriter, r *http.Request) {
-	ps, err := a.st.ListProducts()
+	items, err := a.st.ListItems()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	d := IndexData{Total: len(ps), Msg: clip(r.URL.Query().Get("msg")), Err: clip(r.URL.Query().Get("err"))}
+	d := IndexData{Total: len(items), Msg: clip(r.URL.Query().Get("msg")), Err: clip(r.URL.Query().Get("err"))}
 	if rg, set := a.region(); set {
 		d.Region = rg
 	}
-	d.Symbol = symbol(d.Region.Currency)
-	for _, p := range ps {
-		hist, _ := a.st.History(p.ID)
-		v := buildView(p, hist)
-		if v.Trend == "down" {
-			d.Drops++
+	d.Symbol = symbol(a.defaultCurrency())
+	for _, it := range items {
+		v, err := a.buildItem(it)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
 		}
+		d.Retailers += v.Priced
 		if v.TargetHit {
 			d.Hits++
 		}
-		d.Products = append(d.Products, v)
+		if v.Searching {
+			d.Searching = true
+		}
+		d.Items = append(d.Items, v)
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := a.tpl.ExecuteTemplate(w, "index.html", d); err != nil {
-		log.Printf("render: %v", err)
-	}
+	a.render(w, "index.html", d)
 }
 
-func clip(s string) string {
-	if len(s) > 300 {
-		return s[:300]
-	}
-	return s
-}
+// ---- helpers ----
 
 func redirect(w http.ResponseWriter, r *http.Request, key, msg string) {
 	redirectTo(w, r, "/", key, msg)
@@ -332,66 +342,190 @@ func normalizeURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func (a *App) check(ctx context.Context, p *Product) error {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	res, err := a.fetch.Fetch(ctx, p.URL)
-	if res != nil && res.Currency == "" {
-		res.Currency = "USD"
-		if rg, set := a.region(); set {
-			res.Currency = rg.Currency
+// looksLikeURL tells a pasted link from a product name or model number.
+func looksLikeURL(s string) bool {
+	if strings.ContainsAny(s, " \t") {
+		return false
+	}
+	return strings.Contains(s, "://") || strings.HasPrefix(strings.ToLower(s), "www.") ||
+		(strings.Contains(s, ".") && strings.Contains(s, "/"))
+}
+
+// cleanTitle trims retailer decoration from a page title ("Name | Store").
+func cleanTitle(t string) string {
+	for _, sep := range []string{" | ", " – ", " — ", " : "} {
+		if i := strings.Index(t, sep); i > 8 {
+			t = t[:i]
 		}
 	}
-	if rerr := a.st.RecordCheck(p.ID, res, err); rerr != nil {
-		log.Printf("record %d: %v", p.ID, rerr)
+	t = strings.TrimSpace(t)
+	if utf8.RuneCountInString(t) > 110 {
+		t = string([]rune(t)[:110])
 	}
-	return err
+	return t
 }
+
+func initial(s string) string {
+	for _, r := range s {
+		return strings.ToUpper(string(r))
+	}
+	return "?"
+}
+
+// ---- checking & discovery ----
+
+func (a *App) checkListing(ctx context.Context, l *Listing) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	res, err := a.fetch.Fetch(ctx, l.URL)
+	if res != nil && res.Currency == "" {
+		res.Currency = a.defaultCurrency()
+	}
+	if rerr := a.st.UpdateListing(l.ID, res, err); rerr != nil {
+		log.Printf("update listing %d: %v", l.ID, rerr)
+	}
+}
+
+// refreshItem re-checks every known listing and updates the best-price history.
+func (a *App) refreshItem(ctx context.Context, id int64) {
+	ls, err := a.st.ListListings(id)
+	if err != nil {
+		log.Printf("refresh %d: %v", id, err)
+		return
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	for _, l := range ls {
+		wg.Add(1)
+		go func(l *Listing) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			a.checkListing(ctx, l)
+		}(l)
+	}
+	wg.Wait()
+	if err := a.st.RecordBest(id); err != nil {
+		log.Printf("record best %d: %v", id, err)
+	}
+}
+
+// discover searches the web for retailers selling the item and stores their listings.
+func (a *App) discover(ctx context.Context, id int64) {
+	a.mu.Lock()
+	if a.searching[id] {
+		a.mu.Unlock()
+		return
+	}
+	a.searching[id] = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.searching, id)
+		a.mu.Unlock()
+	}()
+
+	it, err := a.st.GetItem(id)
+	if err != nil {
+		return
+	}
+	rg, set := a.region()
+	if !set {
+		rg = Region{Code: AnyRegion}
+	}
+	offers, serr := a.FindOffers(ctx, it.Name, rg)
+	for _, o := range offers {
+		if err := a.st.UpsertListing(id, o.URL, o.Retailer, o.Title, o.Price, o.Currency); err != nil {
+			log.Printf("upsert listing: %v", err)
+		}
+	}
+	if serr == nil && len(offers) == 0 {
+		serr = errors.New("no retailers with a readable price found yet — try a more specific name, or add a link yourself")
+	}
+	if err := a.st.RecordBest(id); err != nil {
+		log.Printf("record best %d: %v", id, err)
+	}
+	a.st.MarkSearched(id, serr)
+}
+
+func (a *App) startDiscover(id int64) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		a.discover(ctx, id)
+	}()
+}
+
+// ---- handlers ----
 
 func (a *App) add(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
-	u, err := normalizeURL(r.FormValue("url"))
-	if err != nil {
-		redirect(w, r, "err", err.Error())
+	q := strings.TrimSpace(r.FormValue("q"))
+	if q == "" {
+		redirect(w, r, "err", "Enter a product name, model number or link")
 		return
-	}
-	// Links from "Find retailers" were already filtered for the region (and may be
-	// niche suppliers outside the built-in list), so they skip the allow-list.
-	if rg, set := a.region(); set && rg.Code != AnyRegion && r.FormValue("found") != "1" {
-		if pu, _ := url.Parse(u); pu == nil || !rg.Allows(pu) {
-			redirect(w, r, "err", fmt.Sprintf("%s isn't a supported retailer for %s. Change your region in Settings, or pick Worldwide.",
-				pu.Hostname(), rg.Name))
-			return
-		}
 	}
 	target, err := parseTarget(r.FormValue("target"))
 	if err != nil {
 		redirect(w, r, "err", err.Error())
 		return
 	}
-	id, err := a.st.AddProduct(u, MerchantOf(u), u, target)
+	cur := a.defaultCurrency()
+
+	if !looksLikeURL(q) {
+		if utf8.RuneCountInString(q) > 150 {
+			q = string([]rune(q)[:150])
+		}
+		id, err := a.st.AddItem(q, cur, target)
+		if err != nil {
+			redirect(w, r, "err", err.Error())
+			return
+		}
+		a.startDiscover(id)
+		redirect(w, r, "msg", "Searching retailers for it…")
+		return
+	}
+
+	// A pasted link seeds the item: read the product name from it, then look for other retailers.
+	u, err := normalizeURL(q)
 	if err != nil {
 		redirect(w, r, "err", err.Error())
 		return
 	}
-	p, err := a.st.GetProduct(id)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	res, ferr := a.fetch.Fetch(ctx, u)
+	if res == nil || res.Name == "" {
+		redirect(w, r, "err", "Couldn't read a product from that link. Enter the product name or model number instead.")
+		return
+	}
+	if res.Currency == "" {
+		res.Currency = cur
+	}
+	id, err := a.st.AddItem(cleanTitle(res.Name), res.Currency, target)
 	if err != nil {
 		redirect(w, r, "err", err.Error())
 		return
 	}
-	if err := a.check(r.Context(), p); err != nil {
-		redirect(w, r, "err", "Added, but "+err.Error())
-		return
+	price := 0.0
+	if ferr == nil {
+		price = res.Price
 	}
-	redirect(w, r, "msg", "Now tracking it")
+	a.st.UpsertListing(id, u, MerchantOf(u), res.Name, price, res.Currency)
+	if res.Image != "" {
+		a.st.SetItemImage(id, res.Image)
+	}
+	a.st.RecordBest(id)
+	a.startDiscover(id)
+	redirect(w, r, "msg", "Added — now searching other retailers…")
 }
 
-func (a *App) product(w http.ResponseWriter, r *http.Request) *Product {
+func (a *App) item(w http.ResponseWriter, r *http.Request) *Item {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err == nil {
-		var p *Product
-		if p, err = a.st.GetProduct(id); err == nil {
-			return p
+		var it *Item
+		if it, err = a.st.GetItem(id); err == nil {
+			return it
 		}
 	}
 	http.NotFound(w, r)
@@ -399,20 +533,22 @@ func (a *App) product(w http.ResponseWriter, r *http.Request) *Product {
 }
 
 func (a *App) refresh(w http.ResponseWriter, r *http.Request) {
-	p := a.product(w, r)
-	if p == nil {
+	it := a.item(w, r)
+	if it == nil {
 		return
 	}
-	if err := a.check(r.Context(), p); err != nil {
-		redirect(w, r, "err", err.Error())
-		return
-	}
-	redirect(w, r, "msg", "Price updated")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		a.refreshItem(ctx, it.ID)
+		a.discover(ctx, it.ID)
+	}()
+	redirect(w, r, "msg", "Refreshing prices and searching for more retailers…")
 }
 
 func (a *App) target(w http.ResponseWriter, r *http.Request) {
-	p := a.product(w, r)
-	if p == nil {
+	it := a.item(w, r)
+	if it == nil {
 		return
 	}
 	t, err := parseTarget(r.FormValue("target"))
@@ -420,7 +556,7 @@ func (a *App) target(w http.ResponseWriter, r *http.Request) {
 		redirect(w, r, "err", err.Error())
 		return
 	}
-	if err := a.st.SetTarget(p.ID, t); err != nil {
+	if err := a.st.SetTarget(it.ID, t); err != nil {
 		redirect(w, r, "err", err.Error())
 		return
 	}
@@ -428,55 +564,122 @@ func (a *App) target(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) remove(w http.ResponseWriter, r *http.Request) {
-	p := a.product(w, r)
-	if p == nil {
+	it := a.item(w, r)
+	if it == nil {
 		return
 	}
-	if err := a.st.DeleteProduct(p.ID); err != nil {
+	if err := a.st.DeleteItem(it.ID); err != nil {
 		redirect(w, r, "err", err.Error())
 		return
 	}
 	redirect(w, r, "msg", "Removed")
 }
 
+// addLink attaches a specific retailer URL to an item.
+func (a *App) addLink(w http.ResponseWriter, r *http.Request) {
+	it := a.item(w, r)
+	if it == nil {
+		return
+	}
+	u, err := normalizeURL(r.FormValue("url"))
+	if err != nil {
+		redirect(w, r, "err", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	res, ferr := a.fetch.Fetch(ctx, u)
+	price, cur, title := 0.0, a.defaultCurrency(), ""
+	if res != nil {
+		title = res.Name
+		if ferr == nil {
+			price = res.Price
+			if res.Currency != "" {
+				cur = res.Currency
+			}
+		}
+	}
+	if err := a.st.UpsertListing(it.ID, u, MerchantOf(u), title, price, cur); err != nil {
+		redirect(w, r, "err", err.Error())
+		return
+	}
+	a.st.RecordBest(it.ID)
+	if ferr != nil {
+		redirect(w, r, "err", "Link added, but "+ferr.Error())
+		return
+	}
+	redirect(w, r, "msg", "Retailer added")
+}
+
+func (a *App) removeListing(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	l, err := a.st.GetListing(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := a.st.DeleteListing(id); err != nil {
+		redirect(w, r, "err", err.Error())
+		return
+	}
+	a.st.RecordBest(l.ItemID)
+	redirect(w, r, "msg", "Retailer removed")
+}
+
 func (a *App) apiList(w http.ResponseWriter, _ *http.Request) {
-	ps, err := a.st.ListProducts()
+	items, err := a.st.ListItems()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	type item struct {
-		ID          int64     `json:"id"`
-		URL         string    `json:"url"`
-		Name        string    `json:"name"`
-		Merchant    string    `json:"merchant"`
-		Currency    string    `json:"currency"`
-		Price       *float64  `json:"price"`
-		Target      *float64  `json:"target"`
-		LastChecked *int64    `json:"last_checked"`
-		History     []float64 `json:"history"`
+	type listing struct {
+		Retailer string   `json:"retailer"`
+		URL      string   `json:"url"`
+		Price    *float64 `json:"price"`
+		Currency string   `json:"currency"`
 	}
-	out := make([]item, 0, len(ps))
-	for _, p := range ps {
-		it := item{ID: p.ID, URL: p.URL, Name: p.Name, Merchant: p.Merchant, Currency: p.Currency}
-		if p.HasPrice {
-			it.Price = &p.Price
+	type item struct {
+		ID       int64     `json:"id"`
+		Name     string    `json:"name"`
+		Currency string    `json:"currency"`
+		Target   *float64  `json:"target"`
+		Best     *listing  `json:"best"`
+		Listings []listing `json:"listings"`
+		History  []float64 `json:"history"`
+	}
+	out := make([]item, 0, len(items))
+	for _, it := range items {
+		o := item{ID: it.ID, Name: it.Name, Currency: it.Currency, Listings: []listing{}}
+		if it.HasTarget {
+			o.Target = &it.Target
 		}
-		if p.HasTarget {
-			it.Target = &p.Target
+		ls, _ := a.st.ListListings(it.ID)
+		best := bestOf(it.Currency, ls)
+		for _, l := range ls {
+			e := listing{Retailer: l.Retailer, URL: l.URL, Currency: l.Currency}
+			if l.HasPrice {
+				p := l.Price
+				e.Price = &p
+			}
+			o.Listings = append(o.Listings, e)
+			if best != nil && l.ID == best.ID {
+				b := e
+				o.Best = &b
+			}
 		}
-		if !p.LastChecked.IsZero() {
-			t := p.LastChecked.Unix()
-			it.LastChecked = &t
-		}
-		it.History, _ = a.st.History(p.ID)
-		out = append(out, it)
+		o.History, _ = a.st.History(it.ID)
+		out = append(out, o)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
 }
 
-// RefreshLoop re-checks every product on the given interval until ctx ends.
+// RefreshLoop re-checks every item on the given interval and re-discovers
+// retailers for items not searched in the last day.
 func (a *App) RefreshLoop(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -486,14 +689,15 @@ func (a *App) RefreshLoop(ctx context.Context, every time.Duration) {
 			return
 		case <-t.C:
 		}
-		ps, err := a.st.ListProducts()
+		items, err := a.st.ListItems()
 		if err != nil {
 			log.Printf("refresh list: %v", err)
 			continue
 		}
-		for _, p := range ps {
-			if err := a.check(ctx, p); err != nil {
-				log.Printf("refresh %q: %v", p.URL, err)
+		for _, it := range items {
+			a.refreshItem(ctx, it.ID)
+			if time.Since(it.LastSearched) > 24*time.Hour {
+				a.discover(ctx, it.ID)
 			}
 			select {
 			case <-ctx.Done():

@@ -93,3 +93,29 @@ func TestLooksLikeURL(t *testing.T) {
 		}
 	}
 }
+
+func TestConditionalPrices(t *testing.T) {
+	member := `<script type="application/ld+json">{"@type":"Product","name":"Thing","offers":[
+	 {"@type":"Offer","price":"100","priceCurrency":"AUD"},
+	 {"@type":"Offer","name":"Member price","price":"89.50","priceCurrency":"AUD"}]}</script>`
+	r, err := ParsePage(member)
+	if err != nil || r.Price != 89.5 || r.Caveat != cvMember || r.StdPrice != 100 || r.Currency != "AUD" {
+		t.Errorf("member: %+v %v", r, err)
+	}
+	sub := `<script type="application/ld+json">{"@type":"Product","name":"Pods","offers":{"@type":"Offer","price":50,"priceCurrency":"USD",
+	 "priceSpecification":[{"price":50,"priceType":"https://schema.org/ListPrice"},{"price":45,"name":"Subscribe & Save"}]}}</script>`
+	r, _ = ParsePage(sub)
+	if r.Price != 45 || r.Caveat != cvRepeat || r.StdPrice != 50 {
+		t.Errorf("subscription: %+v", r)
+	}
+	html := `<meta property="product:price:amount" content="40.00"><meta property="product:price:currency" content="GBP">
+	 <div>Subscribe &amp; Save <span>£34.00</span></div>`
+	r, _ = ParsePage(html)
+	if r.Price != 34 || r.Caveat != cvRepeat || r.StdPrice != 40 {
+		t.Errorf("page text: %+v", r)
+	}
+	plain, _ := ParsePage(`<meta property="product:price:amount" content="40.00"><div>Members price <span>£1.00</span></div>`)
+	if plain.Price != 40 || plain.Caveat != "" {
+		t.Errorf("implausible conditional price should be ignored: %+v", plain)
+	}
+}

@@ -7,6 +7,7 @@ A small, self-hosted tool that finds the cheapest retailer for a product. Add a 
 - Extracts prices from schema.org JSON-LD, OpenGraph/product meta tags and common storefront markup
 - Pick your region in Settings: searches only cover stores serving it, and prices default to its currency
 - Results are checked for relevance (model numbers must match) and for a readable price; add your own retailer links too
+- Always shows the genuinely cheapest price, even when conditional, labelled with its caveat (member price, subscribe & save / repeat delivery, business, student) alongside the cheapest standard price
 
 > Some merchants aggressively block automated requests. When a check fails the card shows why and keeps its history.
 

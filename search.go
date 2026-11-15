@@ -151,6 +151,8 @@ type Offer struct {
 	URL      string
 	Price    float64
 	Currency string
+	Caveat   string
+	StdPrice float64
 	InRegion bool // a known retailer for the user's region
 }
 
@@ -243,7 +245,7 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 			if !relevant(query, res.Name+" "+c.Title+" "+c.URL) {
 				return
 			}
-			c.Price, c.Currency = res.Price, res.Currency
+			c.Price, c.Currency, c.Caveat, c.StdPrice = res.Price, res.Currency, res.Caveat, res.StdPrice
 			if c.Currency == "" {
 				c.Currency = rg.Currency
 			}

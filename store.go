@@ -30,6 +30,8 @@ create table if not exists listings(
   currency     text not null default '',
   last_checked integer not null default 0,
   last_error   text not null default '',
+  caveat       text not null default '',
+  std_price    real,
   unique(item_id, url)
 );
 create table if not exists history(
@@ -67,6 +69,9 @@ type Listing struct {
 	Currency    string
 	LastChecked time.Time
 	LastError   string
+	Caveat      string  // condition on Price, e.g. "Member price"
+	StdPrice    float64 // cheapest unconditional price when Caveat is set
+	HasStd      bool
 }
 
 // Store wraps the SQLite database.
@@ -82,6 +87,13 @@ func OpenStore(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
+	}
+	// Upgrade databases created before conditional pricing existed.
+	for _, q := range []string{`alter table listings add column caveat text not null default ''`, `alter table listings add column std_price real`} {
+		if _, err := db.Exec(q); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, err
+		}
 	}
 	s := &Store{db: db}
 	if err := s.migrateV1(); err != nil {
@@ -167,16 +179,17 @@ func scanItem(r scanner) (*Item, error) {
 	return &it, nil
 }
 
-const listingCols = `id, item_id, url, retailer, title, price, currency, last_checked, last_error`
+const listingCols = `id, item_id, url, retailer, title, price, currency, last_checked, last_error, caveat, std_price`
 
 func scanListing(r scanner) (*Listing, error) {
 	var l Listing
-	var price sql.NullFloat64
+	var price, std sql.NullFloat64
 	var checked int64
-	if err := r.Scan(&l.ID, &l.ItemID, &l.URL, &l.Retailer, &l.Title, &price, &l.Currency, &checked, &l.LastError); err != nil {
+	if err := r.Scan(&l.ID, &l.ItemID, &l.URL, &l.Retailer, &l.Title, &price, &l.Currency, &checked, &l.LastError, &l.Caveat, &std); err != nil {
 		return nil, err
 	}
 	l.Price, l.HasPrice = price.Float64, price.Valid
+	l.StdPrice, l.HasStd = std.Float64, std.Valid
 	if checked > 0 {
 		l.LastChecked = time.Unix(checked, 0)
 	}
@@ -263,18 +276,23 @@ func (s *Store) DeleteListing(id int64) error {
 }
 
 // UpsertListing inserts or refreshes a listing. A non-positive price stores NULL.
-func (s *Store) UpsertListing(itemID int64, url, retailer, title string, price float64, cur string) error {
-	var p any
+func (s *Store) UpsertListing(itemID int64, url, retailer, title string, price float64, cur, caveat string, stdPrice float64) error {
+	var p, sp any
 	if price > 0 {
 		p = price
 	}
-	_, err := s.db.Exec(`insert into listings(item_id, url, retailer, title, price, currency, last_checked)
-		values(?,?,?,?,?,?,?)
+	if stdPrice > 0 && caveat != "" {
+		sp = stdPrice
+	}
+	_, err := s.db.Exec(`insert into listings(item_id, url, retailer, title, price, currency, last_checked, caveat, std_price)
+		values(?,?,?,?,?,?,?,?,?)
 		on conflict(item_id, url) do update set retailer = excluded.retailer,
 		  title = case when excluded.title != '' then excluded.title else title end,
 		  price = coalesce(excluded.price, price), currency = excluded.currency,
+		  caveat = case when excluded.price is null then caveat else excluded.caveat end,
+		  std_price = case when excluded.price is null then std_price else excluded.std_price end,
 		  last_checked = excluded.last_checked, last_error = ''`,
-		itemID, url, retailer, title, p, cur, time.Now().Unix())
+		itemID, url, retailer, title, p, cur, time.Now().Unix(), caveat, sp)
 	return err
 }
 
@@ -288,8 +306,12 @@ func (s *Store) UpdateListing(id int64, r *Result, ferr error) error {
 		_, err := s.db.Exec(`update listings set last_checked = ?, last_error = ? where id = ?`, now, clip(ferr.Error()), id)
 		return err
 	}
+	var sp any
+	if r.Caveat != "" && r.StdPrice > 0 {
+		sp = r.StdPrice
+	}
 	_, err := s.db.Exec(`update listings set price = ?, currency = ?, title = case when ? != '' then ? else title end,
-		last_checked = ?, last_error = '' where id = ?`, r.Price, r.Currency, r.Name, r.Name, now, id)
+		caveat = ?, std_price = ?, last_checked = ?, last_error = '' where id = ?`, r.Price, r.Currency, r.Name, r.Name, r.Caveat, sp, now, id)
 	return err
 }
 

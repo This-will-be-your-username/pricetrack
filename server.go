@@ -186,6 +186,8 @@ type ItemView struct {
 	*Item
 	Listings  []ListingView
 	Best      *Listing
+	Std       *Listing // cheapest retailer with no conditions attached
+	StdPrice  float64
 	Savings   float64 // gap between cheapest and priciest retailer
 	Spark     string
 	Trend     string // up | down | flat
@@ -232,6 +234,22 @@ func (a *App) buildItem(it *Item) (ItemView, error) {
 			}
 		}
 		v.Listings = append(v.Listings, ListingView{Listing: l, Best: v.Best != nil && l.ID == v.Best.ID})
+	}
+	for _, l := range ls {
+		eff := 0.0
+		switch {
+		case !l.HasPrice || l.Currency != it.Currency:
+			continue
+		case l.Caveat == "":
+			eff = l.Price
+		case l.HasStd:
+			eff = l.StdPrice
+		default:
+			continue
+		}
+		if v.Std == nil || eff < v.StdPrice {
+			v.Std, v.StdPrice = l, eff
+		}
 	}
 	if v.Best != nil {
 		v.Savings = hi - v.Best.Price
@@ -435,7 +453,7 @@ func (a *App) discover(ctx context.Context, id int64) {
 	}
 	offers, serr := a.FindOffers(ctx, it.Name, rg)
 	for _, o := range offers {
-		if err := a.st.UpsertListing(id, o.URL, o.Retailer, o.Title, o.Price, o.Currency); err != nil {
+		if err := a.st.UpsertListing(id, o.URL, o.Retailer, o.Title, o.Price, o.Currency, o.Caveat, o.StdPrice); err != nil {
 			log.Printf("upsert listing: %v", err)
 		}
 	}
@@ -511,7 +529,11 @@ func (a *App) add(w http.ResponseWriter, r *http.Request) {
 	if ferr == nil {
 		price = res.Price
 	}
-	a.st.UpsertListing(id, u, MerchantOf(u), res.Name, price, res.Currency)
+	caveat, std := "", 0.0
+	if ferr == nil {
+		caveat, std = res.Caveat, res.StdPrice
+	}
+	a.st.UpsertListing(id, u, MerchantOf(u), res.Name, price, res.Currency, caveat, std)
 	if res.Image != "" {
 		a.st.SetItemImage(id, res.Image)
 	}
@@ -589,17 +611,17 @@ func (a *App) addLink(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	res, ferr := a.fetch.Fetch(ctx, u)
-	price, cur, title := 0.0, a.defaultCurrency(), ""
+	price, cur, title, caveat, std := 0.0, a.defaultCurrency(), "", "", 0.0
 	if res != nil {
 		title = res.Name
 		if ferr == nil {
-			price = res.Price
+			price, caveat, std = res.Price, res.Caveat, res.StdPrice
 			if res.Currency != "" {
 				cur = res.Currency
 			}
 		}
 	}
-	if err := a.st.UpsertListing(it.ID, u, MerchantOf(u), title, price, cur); err != nil {
+	if err := a.st.UpsertListing(it.ID, u, MerchantOf(u), title, price, cur, caveat, std); err != nil {
 		redirect(w, r, "err", err.Error())
 		return
 	}
@@ -641,6 +663,8 @@ func (a *App) apiList(w http.ResponseWriter, _ *http.Request) {
 		URL      string   `json:"url"`
 		Price    *float64 `json:"price"`
 		Currency string   `json:"currency"`
+		Caveat   string   `json:"caveat,omitempty"`
+		StdPrice *float64 `json:"standard_price,omitempty"`
 	}
 	type item struct {
 		ID       int64     `json:"id"`
@@ -660,7 +684,11 @@ func (a *App) apiList(w http.ResponseWriter, _ *http.Request) {
 		ls, _ := a.st.ListListings(it.ID)
 		best := bestOf(it.Currency, ls)
 		for _, l := range ls {
-			e := listing{Retailer: l.Retailer, URL: l.URL, Currency: l.Currency}
+			e := listing{Retailer: l.Retailer, URL: l.URL, Currency: l.Currency, Caveat: l.Caveat}
+			if l.HasStd {
+				sp := l.StdPrice
+				e.StdPrice = &sp
+			}
 			if l.HasPrice {
 				p := l.Price
 				e.Price = &p

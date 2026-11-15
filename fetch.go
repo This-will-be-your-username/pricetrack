@@ -23,6 +23,8 @@ type Result struct {
 	Image    string
 	Price    float64
 	Currency string
+	Caveat   string  // condition attached to Price (e.g. "Member price"); empty if none
+	StdPrice float64 // cheapest unconditional price when Price carries a caveat
 }
 
 // Fetcher downloads product pages and extracts prices.
@@ -103,6 +105,7 @@ var (
 // meta tags and a few merchant-specific fallbacks.
 func ParsePage(page string) (*Result, error) {
 	r := &Result{}
+	var cands []priceCand
 
 	// 1. schema.org JSON-LD
 	for _, m := range reLD.FindAllStringSubmatch(page, -1) {
@@ -119,11 +122,7 @@ func ParsePage(page string) (*Result, error) {
 			if r.Image == "" {
 				r.Image = imageOf(p["image"])
 			}
-			if r.Price == 0 {
-				if pr, cur, ok := offerPrice(p["offers"]); ok {
-					r.Price, r.Currency = pr, cur
-				}
-			}
+			collectOffers(p["offers"], "", "", &cands)
 		}
 	}
 
@@ -157,12 +156,12 @@ func ParsePage(page string) (*Result, error) {
 	if r.Image == "" {
 		r.Image = meta["og:image"]
 	}
-	if r.Price == 0 {
+	if !hasStandard(cands) {
 		for _, k := range []string{"product:price:amount", "og:price:amount", "twitter:data1", "price"} {
 			if v, ok := meta[k]; ok {
 				if p, ok := parsePrice(v); ok {
-					r.Price = p
-					r.Currency = firstNonEmpty(meta["product:price:currency"], meta["og:price:currency"], meta["pricecurrency"], currencyOf(v))
+					cur := firstNonEmpty(meta["product:price:currency"], meta["og:price:currency"], meta["pricecurrency"], currencyOf(v))
+					cands = append(cands, priceCand{price: p, cur: cur})
 					break
 				}
 			}
@@ -180,13 +179,17 @@ func ParsePage(page string) (*Result, error) {
 			r.Image = m[1]
 		}
 	}
-	if r.Price == 0 {
+	if !hasStandard(cands) {
 		if m := reAmzOff.FindStringSubmatch(page); m != nil {
 			if p, ok := parsePrice(m[1]); ok {
-				r.Price, r.Currency = p, currencyOf(m[1])
+				cands = append(cands, priceCand{price: p, cur: currencyOf(m[1])})
 			}
 		}
 	}
+
+	// 4. Conditional prices mentioned in the page body (member / subscription).
+	cands = append(cands, pageConditionalPrices(page, cands)...)
+	pickPrice(r, cands)
 
 	if r.Name == "" {
 		if m := reTitle.FindStringSubmatch(page); m != nil {
@@ -237,32 +240,174 @@ func hasType(v any, want string) bool {
 	return false
 }
 
-func offerPrice(v any) (float64, string, bool) {
-	switch t := v.(type) {
-	case []any:
-		best, cur, found := 0.0, "", false
-		for _, e := range t {
-			if p, c, ok := offerPrice(e); ok && (!found || p < best) {
-				best, cur, found = p, c, true
-			}
+// priceCand is one price seen on a page. caveat is empty for the ordinary
+// price anyone can pay, otherwise a short label for the condition attached.
+type priceCand struct {
+	price  float64
+	cur    string
+	caveat string
+}
+
+func hasStandard(c []priceCand) bool {
+	for _, p := range c {
+		if p.caveat == "" {
+			return true
 		}
-		return best, cur, found
-	case map[string]any:
-		cur := str(t["priceCurrency"])
-		for _, k := range []string{"price", "lowPrice"} {
-			if p, ok := parsePrice(t[k]); ok {
-				return p, cur, true
-			}
-		}
-		for _, k := range []string{"priceSpecification", "offers"} {
-			if c, ok := t[k]; ok {
-				if p, c2, ok := offerPrice(c); ok {
-					return p, firstNonEmpty(cur, c2), true
+	}
+	return false
+}
+
+// Labels for conditional prices.
+const (
+	cvMember   = "Member price"
+	cvRepeat   = "With repeat delivery"
+	cvBusiness = "Business customers only"
+	cvStudent  = "Student price"
+)
+
+// caveatFrom classifies descriptive text (offer names, customer types, ...).
+func caveatFrom(text string) string {
+	t := strings.ToLower(text)
+	switch {
+	case strings.Contains(t, "member") || strings.Contains(t, "loyalty") || strings.Contains(t, "club price"):
+		return cvMember
+	case strings.Contains(t, "subscri") || strings.Contains(t, "repeat") || strings.Contains(t, "recurring") ||
+		strings.Contains(t, "autoship") || strings.Contains(t, "auto-ship") || strings.Contains(t, "auto-delivery") ||
+		strings.Contains(t, "auto delivery") || strings.Contains(t, "autodelivery") || strings.Contains(t, "replenish"):
+		return cvRepeat
+	case strings.Contains(t, "business") || strings.Contains(t, "trade customer"):
+		return cvBusiness
+	case strings.Contains(t, "student") || strings.Contains(t, "educat"):
+		return cvStudent
+	}
+	return ""
+}
+
+// textOf joins the string (or string-list) values of the given keys.
+func textOf(m map[string]any, keys ...string) string {
+	var parts []string
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case string:
+			parts = append(parts, v)
+		case []any:
+			for _, e := range v {
+				if s, ok := e.(string); ok {
+					parts = append(parts, s)
 				}
 			}
 		}
 	}
-	return 0, "", false
+	return strings.Join(parts, " ")
+}
+
+// collectOffers walks schema.org Offer / AggregateOffer / PriceSpecification
+// structures, gathering every selling price with any condition attached.
+func collectOffers(v any, inheritCur, inheritCaveat string, out *[]priceCand) {
+	switch t := v.(type) {
+	case []any:
+		for _, e := range t {
+			collectOffers(e, inheritCur, inheritCaveat, out)
+		}
+	case map[string]any:
+		pt := strings.ToLower(str(t["priceType"]))
+		if strings.Contains(pt, "list") || strings.Contains(pt, "srp") || strings.Contains(pt, "strikethrough") ||
+			strings.Contains(pt, "minimumadvertised") || strings.Contains(pt, "invoice") {
+			return // reference prices, not what you pay
+		}
+		cur := firstNonEmpty(str(t["priceCurrency"]), inheritCur)
+		cv := inheritCaveat
+		if c := caveatFrom(textOf(t, "name", "description", "category", "eligibleCustomerType", "priceType")); c != "" {
+			cv = c
+		}
+		for _, k := range []string{"price", "lowPrice"} {
+			if p, ok := parsePrice(t[k]); ok {
+				*out = append(*out, priceCand{price: p, cur: cur, caveat: cv})
+				break
+			}
+		}
+		for _, k := range []string{"priceSpecification", "offers"} {
+			if c, ok := t[k]; ok {
+				collectOffers(c, cur, cv, out)
+			}
+		}
+	}
+}
+
+const priceTail = `(?:<[^>]*>|[^<]){0,160}?([$€£]\s?\d[\d.,]*)`
+
+var condPatterns = []struct {
+	re     *regexp.Regexp
+	caveat string
+}{
+	{regexp.MustCompile(`(?is)subscribe\s*(?:&amp;|&|and)\s*save` + priceTail), cvRepeat},
+	{regexp.MustCompile(`(?is)(?:repeat|recurring|auto[- ]?(?:ship|delivery|replenish\w*))\s*(?:delivery|order|price)` + priceTail), cvRepeat},
+	{regexp.MustCompile(`(?is)\bmembers?(?:hip)?(?:\s+only)?\s*(?:price|pricing|deal)` + priceTail), cvMember},
+	{regexp.MustCompile(`(?is)([$€£]\s?\d[\d.,]*)(?:<[^>]*>|[^<]){0,30}\b(?:members?\s*(?:price|only)|for members|with membership)`), cvMember},
+}
+
+// pageConditionalPrices looks for member / subscription prices in page text. Page
+// text is noisy, so a hit is only believed when it undercuts a known standard
+// price by a plausible amount.
+func pageConditionalPrices(page string, have []priceCand) []priceCand {
+	std, cur := 0.0, ""
+	for _, c := range have {
+		if c.caveat == "" && (std == 0 || c.price < std) {
+			std, cur = c.price, c.cur
+		}
+	}
+	if std == 0 {
+		return nil
+	}
+	var out []priceCand
+	for _, pat := range condPatterns {
+		for _, m := range pat.re.FindAllStringSubmatch(page, 6) {
+			if p, ok := parsePrice(m[1]); ok && p < std && p >= 0.3*std {
+				out = append(out, priceCand{price: p, cur: firstNonEmpty(currencyOf(m[1]), cur), caveat: pat.caveat})
+			}
+		}
+	}
+	return out
+}
+
+// pickPrice sets r.Price to the cheapest candidate, including conditional ones,
+// recording the caveat and the cheapest unconditional price.
+func pickPrice(r *Result, cands []priceCand) {
+	cur := ""
+	for _, c := range cands { // the first standard price decides the currency
+		if c.caveat == "" && c.cur != "" {
+			cur = c.cur
+			break
+		}
+	}
+	if cur == "" {
+		for _, c := range cands {
+			if c.cur != "" {
+				cur = c.cur
+				break
+			}
+		}
+	}
+	var best, std *priceCand
+	for i := range cands {
+		c := &cands[i]
+		if c.price <= 0 || (c.cur != "" && cur != "" && c.cur != cur) {
+			continue
+		}
+		if best == nil || c.price < best.price {
+			best = c
+		}
+		if c.caveat == "" && (std == nil || c.price < std.price) {
+			std = c
+		}
+	}
+	if best == nil {
+		return
+	}
+	r.Price, r.Currency, r.Caveat = best.price, firstNonEmpty(cur, best.cur), best.caveat
+	if best.caveat != "" && std != nil {
+		r.StdPrice = std.price
+	}
 }
 
 func imageOf(v any) string {

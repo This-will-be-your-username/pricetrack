@@ -54,6 +54,7 @@
           {{end}}
         </div>
         <a class="buy" href="{{.Best.URL}}" target="_blank" rel="noopener noreferrer">Cheapest at <b>{{.Best.Retailer}}</b> ↗</a>
+        {{if .Best.Caveat}}<div class="caveat"><span class="cv">{{.Best.Caveat}}</span>{{if .Std}} Standard price: {{money .Currency .StdPrice}}{{if ne .Std.ID .Best.ID}} at {{.Std.Retailer}}{{end}}{{end}}</div>{{end}}
       </div>
       {{else if .Searching}}
       <div class="searching"><span class="dot"></span>Looking for retailers…</div>
@@ -78,6 +79,7 @@
           {{range .Listings}}
           <li class="{{if .Best}}best-row{{end}}">
             <a href="{{.URL}}" target="_blank" rel="noopener noreferrer" title="{{.Title}}">{{if .Retailer}}{{.Retailer}}{{else}}Link{{end}}</a>
+            {{if .Caveat}}<span class="cv" title="{{if .HasStd}}Standard price {{money .Currency .StdPrice}}{{else}}Standard price not found{{end}}">{{.Caveat}}</span>{{end}}
             {{if .HasPrice}}<span class="rp">{{money .Currency .Price}}</span>{{else}}<span class="rp none" title="{{.LastError}}">no price</span>{{end}}
             <form method="post" action="/listings/{{.ID}}/delete" data-confirm="Remove this retailer?"><button class="icon danger" title="Remove retailer" aria-label="Remove retailer">✕</button></form>
           </li>

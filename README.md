@@ -17,7 +17,7 @@ go run .                    # http://localhost:8080
 Or grab a binary from the Releases page, or use Docker:
 
 ```bash
-docker run -d -p 8080:8080 -v pricetrack-data:/data ghcr.io/OWNER/pricetrack:latest
+docker run -d -p 8080:8080 -v pricetrack-data:/data ghcr.io/this-will-be-your-username/pricetrack:latest
 ```
 
 `docker compose up -d` also works with the included `docker-compose.yml`.

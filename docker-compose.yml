@@ -1,7 +1,7 @@
 services:
   pricetrack:
     build: .
-    # or: image: ghcr.io/OWNER/pricetrack:latest
+    # or: image: ghcr.io/this-will-be-your-username/pricetrack:latest
     ports:
       - "8080:8080"
     volumes:

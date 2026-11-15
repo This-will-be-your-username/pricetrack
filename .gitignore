@@ -1,0 +1,8 @@
+/data/
+/dist/
+*.db
+*.db-wal
+*.db-shm
+/pricetrack
+/pricetrack.exe
+.claude/

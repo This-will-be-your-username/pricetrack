@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>PriceTrack</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="/"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>PriceTrack</a>
+    <form class="add" method="post" action="/products" data-busy="Fetching…">
+      <input class="url" type="text" name="url" placeholder="Paste a product link…" autocomplete="off" required>
+      <input class="tgt" type="text" name="target" inputmode="decimal" placeholder="Target $" autocomplete="off" aria-label="Target price">
+      <button type="submit">Track</button>
+    </form>
+  </div>
+</header>
+
+<main class="wrap">
+  {{if .Msg}}<div class="flash ok" role="status">{{.Msg}}</div>{{end}}
+  {{if .Err}}<div class="flash err" role="alert">{{.Err}}</div>{{end}}
+
+  {{if .Products}}
+  <section class="stats">
+    <div><b>{{.Total}}</b><span>tracked</span></div>
+    <div><b>{{.Drops}}</b><span>price drops</span></div>
+    <div><b>{{.Hits}}</b><span>at target</span></div>
+  </section>
+
+  <section class="grid">
+  {{range .Products}}
+    <article class="card">
+      <div class="top-row">
+        {{if .Image}}<img class="thumb" src="{{.Image}}" alt="" loading="lazy" referrerpolicy="no-referrer">{{else}}<div class="thumb ph">{{if .Merchant}}{{slice .Merchant 0 1}}{{else}}?{{end}}</div>{{end}}
+        <div class="meta">
+          <span class="chip">{{.Merchant}}</span>
+          <a class="name" href="{{.URL}}" target="_blank" rel="noopener noreferrer" title="{{.Name}}">{{.Name}}</a>
+        </div>
+      </div>
+
+      <div class="price-row">
+        {{if .HasPrice}}
+          <div class="price">{{money .Currency .Price}}</div>
+          {{if .HasDelta}}
+            {{if eq .Trend "down"}}<span class="pill down">↓ {{money .Currency (abs .Delta)}} · {{printf "%.0f" (abs .DeltaPct)}}%</span>
+            {{else if eq .Trend "up"}}<span class="pill up">↑ {{money .Currency (abs .Delta)}} · {{printf "%.0f" (abs .DeltaPct)}}%</span>{{end}}
+          {{end}}
+        {{else}}
+          <div class="price none">—</div>
+        {{end}}
+      </div>
+
+      <div class="badges">
+        {{if .TargetHit}}<span class="badge good">Target hit</span>{{end}}
+        {{if and .Lowest .HasDelta}}<span class="badge">Lowest seen</span>{{end}}
+        {{if .LastError}}<span class="badge bad" title="{{.LastError}}">Check failed</span>{{end}}
+      </div>
+
+      {{if .Spark}}
+      <svg class="spark {{.Trend}}" viewBox="0 0 100 30" preserveAspectRatio="none" aria-label="Price history"><polyline points="{{.Spark}}" fill="none" vector-effect="non-scaling-stroke"/></svg>
+      {{else}}<div class="spark empty">History builds as prices change</div>{{end}}
+
+      {{if .LastError}}<p class="errline">{{.LastError}}</p>{{end}}
+
+      <div class="foot">
+        <span class="muted">Checked {{ago .LastChecked}}</span>
+        <form class="tform" method="post" action="/products/{{.ID}}/target">
+          <input type="text" name="target" inputmode="decimal" value="{{if .HasTarget}}{{printf "%.2f" .Target}}{{end}}" placeholder="target" aria-label="Target price">
+          <button class="ghost" title="Save target">Set</button>
+        </form>
+        <form method="post" action="/products/{{.ID}}/refresh" data-busy="…"><button class="icon" title="Refresh now" aria-label="Refresh now">↻</button></form>
+        <form method="post" action="/products/{{.ID}}/delete" data-confirm="Stop tracking this product?"><button class="icon danger" title="Remove" aria-label="Remove">✕</button></form>
+      </div>
+    </article>
+  {{end}}
+  </section>
+  {{else}}
+  <section class="empty">
+    <svg viewBox="0 0 24 24" width="44" height="44" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <h1>Track prices, buy at the right time</h1>
+    <p>Paste a link from Amazon, Walmart, Target, Best Buy, eBay and more.<br>Set an optional target price and we'll flag it when it's reached.</p>
+  </section>
+  {{end}}
+</main>
+<footer class="wrap foot-note">Prices are checked automatically in the background · <a href="/api/products">JSON</a></footer>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

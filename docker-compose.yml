@@ -1,0 +1,16 @@
+services:
+  pricetrack:
+    build: .
+    # or: image: ghcr.io/OWNER/pricetrack:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - pricetrack-data:/data
+    environment:
+      REFRESH_INTERVAL: 6h
+      # AUTH_USER: me
+      # AUTH_PASS: change-me
+    restart: unless-stopped
+
+volumes:
+  pricetrack-data:

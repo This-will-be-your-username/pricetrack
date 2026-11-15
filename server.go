@@ -60,12 +60,34 @@ func (a *App) Routes() http.Handler {
 	return a.secure(mux)
 }
 
+// sameOrigin decides whether a POST came from our own pages. Browsers send
+// Sec-Fetch-Site; older ones fall back to comparing Origin with the Host
+// (also honouring X-Forwarded-Host behind a reverse proxy).
+func sameOrigin(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return true
+	case "":
+	default:
+		return false
+	}
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return true // non-browser client (curl etc.)
+	}
+	u, err := url.Parse(o)
+	if err != nil {
+		return false
+	}
+	return u.Host == r.Host || u.Host == r.Header.Get("X-Forwarded-Host")
+}
+
 func (a *App) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Content-Security-Policy", "default-src 'self'; img-src * data:; frame-ancestors 'none'")
 		if a.user != "" && r.URL.Path != "/healthz" {
 			u, p, ok := r.BasicAuth()
@@ -78,11 +100,9 @@ func (a *App) secure(next http.Handler) http.Handler {
 		}
 		// Cheap CSRF guard: state-changing requests must come from our own origin.
 		if r.Method == http.MethodPost {
-			if o := r.Header.Get("Origin"); o != "" {
-				if u, err := url.Parse(o); err != nil || u.Host != r.Host {
-					http.Error(w, "cross-origin request blocked", http.StatusForbidden)
-					return
-				}
+			if !sameOrigin(r) {
+				http.Error(w, "cross-origin request blocked", http.StatusForbidden)
+				return
 			}
 		}
 		next.ServeHTTP(w, r)

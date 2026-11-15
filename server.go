@@ -79,6 +79,9 @@ func sameOrigin(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
+	if u.Host == "" {
+		return false // "null" origin without Sec-Fetch-Site: can't vouch for it
+	}
 	return u.Host == r.Host || u.Host == r.Header.Get("X-Forwarded-Host")
 }
 

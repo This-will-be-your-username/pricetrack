@@ -199,9 +199,6 @@ func ParsePage(page string) (*Result, error) {
 	}
 	r.Image = html.UnescapeString(strings.TrimSpace(r.Image))
 	r.Currency = strings.ToUpper(strings.TrimSpace(r.Currency))
-	if r.Currency == "" {
-		r.Currency = "USD"
-	}
 	if r.Price <= 0 {
 		return r, errors.New("couldn't find a price on that page (the merchant may block automated requests)")
 	}
@@ -342,9 +339,8 @@ func currencyOf(s string) string {
 		return "JPY"
 	case strings.Contains(s, "CA$"), strings.Contains(s, "C$"):
 		return "CAD"
-	case strings.Contains(s, "$"):
-		return "USD"
 	}
+	// A bare "$" is ambiguous (USD/AUD/CAD/NZD...); the caller falls back to the region currency.
 	return ""
 }
 
@@ -362,6 +358,9 @@ func MerchantOf(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" {
 		return ""
+	}
+	if n := retailerName(u); n != "" {
+		return n
 	}
 	if net.ParseIP(u.Hostname()) != nil || !strings.Contains(u.Hostname(), ".") {
 		return u.Hostname()

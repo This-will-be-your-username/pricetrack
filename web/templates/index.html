@@ -14,13 +14,16 @@
     <a class="brand" href="/"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>PriceTrack</a>
     <form class="add" method="post" action="/products" data-busy="Fetching…">
       <input class="url" type="text" name="url" placeholder="Paste a product link…" autocomplete="off" required>
-      <input class="tgt" type="text" name="target" inputmode="decimal" placeholder="Target $" autocomplete="off" aria-label="Target price">
+      <input class="tgt" type="text" name="target" inputmode="decimal" placeholder="Target {{.Symbol}}" autocomplete="off" aria-label="Target price">
       <button type="submit">Track</button>
     </form>
+    <a class="region-link" href="/find">Find stores</a>
+    <a class="region-link" href="/settings" title="Settings">{{if .Region.Code}}{{if eq .Region.Code "ANY"}}🌐 Worldwide{{else}}{{.Region.Code}}{{end}}{{else}}Settings{{end}} ⚙</a>
   </div>
 </header>
 
 <main class="wrap">
+  {{if not .Region.Code}}<div class="flash info" role="status">Choose your region to only track stores that ship to you. <a href="/settings">Open settings</a></div>{{end}}
   {{if .Msg}}<div class="flash ok" role="status">{{.Msg}}</div>{{end}}
   {{if .Err}}<div class="flash err" role="alert">{{.Err}}</div>{{end}}
 
@@ -72,6 +75,7 @@
           <input type="text" name="target" inputmode="decimal" value="{{if .HasTarget}}{{printf "%.2f" .Target}}{{end}}" placeholder="target" aria-label="Target price">
           <button class="ghost" title="Save target">Set</button>
         </form>
+        <a class="icon-link" href="/find?q={{.Name}}" title="Find other retailers" aria-label="Find other retailers">⌕</a>
         <form method="post" action="/products/{{.ID}}/refresh" data-busy="…"><button class="icon" title="Refresh now" aria-label="Refresh now">↻</button></form>
         <form method="post" action="/products/{{.ID}}/delete" data-confirm="Stop tracking this product?"><button class="icon danger" title="Remove" aria-label="Remove">✕</button></form>
       </div>

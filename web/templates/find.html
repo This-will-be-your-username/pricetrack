@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Find retailers · PriceTrack</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="/"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>PriceTrack</a>
+    <span class="grow"></span>
+    <a class="region-link" href="/">← Back</a>
+  </div>
+</header>
+
+<main class="wrap narrow">
+  <h1 class="page-title">Find retailers</h1>
+  <form class="panel" method="get" action="/find" data-busy="Searching…">
+    <p class="muted-p">Search the web for stores selling a product{{if .Region.Name}} in {{.Region.Name}}{{end}} — handy for niche items and smaller suppliers. Results are checked for a readable price.</p>
+    <div class="row">
+      <input class="grow" type="text" name="q" value="{{.Query}}" placeholder="Product name or model number…" autocomplete="off" required>
+      <button type="submit">Search</button>
+    </div>
+  </form>
+
+  {{if .Err}}<div class="flash err" role="alert">{{.Err}}</div>{{end}}
+
+  {{if .Searched}}
+    {{if .Offers}}
+    <section class="offers">
+      {{range .Offers}}
+      <div class="offer">
+        <div class="offer-main">
+          <span class="chip">{{.Retailer}}</span>{{if .InRegion}} <span class="badge good">Local retailer</span>{{end}}
+          <a class="name" href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.Title}}</a>
+          <span class="muted">{{.Host}}</span>
+        </div>
+        <div class="offer-price">{{money .Currency .Price}}</div>
+        <form method="post" action="/products" data-busy="…">
+          <input type="hidden" name="url" value="{{.URL}}">
+          <input type="hidden" name="found" value="1">
+          <button class="ghost">Track</button>
+        </form>
+      </div>
+      {{end}}
+    </section>
+    {{else if not .Err}}
+    <p class="muted-p">No retailers with a readable price turned up. Try a more specific name or model number.</p>
+    {{end}}
+  {{end}}
+</main>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

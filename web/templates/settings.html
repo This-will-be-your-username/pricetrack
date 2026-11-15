@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Settings · PriceTrack</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="/"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>PriceTrack</a>
+    <span class="grow"></span>
+    <a class="region-link" href="/">← Back</a>
+  </div>
+</header>
+
+<main class="wrap narrow">
+  {{if .Msg}}<div class="flash ok" role="status">{{.Msg}}</div>{{end}}
+  {{if .Err}}<div class="flash err" role="alert">{{.Err}}</div>{{end}}
+
+  <h1 class="page-title">Settings</h1>
+  <form class="panel" method="post" action="/settings">
+    <label for="region"><b>Region</b></label>
+    <p class="muted-p">Only retailers that serve your region can be added, and prices default to its currency.</p>
+    <div class="row">
+      <select id="region" name="region">
+        <option value="" {{if not .Current}}selected{{end}} disabled>Select a region…</option>
+        {{range .Regions}}<option value="{{.Code}}" {{if eq $.Current .Code}}selected{{end}}>{{.Name}} ({{.Currency}})</option>{{end}}
+        <option value="ANY" {{if eq .Current "ANY"}}selected{{end}}>Worldwide (no restriction)</option>
+      </select>
+      <button type="submit">Save</button>
+    </div>
+  </form>
+
+  {{if .Current}}{{if ne .Current "ANY"}}
+  <section class="panel">
+    <b>Supported retailers in {{.Selected.Name}}</b>
+    <ul class="retailers">
+      {{range .Selected.Retailers}}<li title="{{range $i, $d := .Domains}}{{if $i}}, {{end}}{{$d}}{{end}}">{{.Name}}</li>{{end}}
+    </ul>
+  </section>
+  {{end}}{{end}}
+</main>
+</body>
+</html>

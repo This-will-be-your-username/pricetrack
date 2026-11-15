@@ -67,6 +67,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	app.search = NewSearcher(app.fetch, os.Getenv("SEARCH_API_KEY"))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

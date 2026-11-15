@@ -28,6 +28,7 @@ create table if not exists prices(
   price      real not null,
   ts         integer not null
 );
+create table if not exists settings(key text primary key, value text not null);
 create index if not exists prices_pid on prices(product_id, id);
 `
 
@@ -125,6 +126,18 @@ func (s *Store) ListProducts() ([]*Product, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetSetting(key string) string {
+	var v string
+	s.db.QueryRow(`select value from settings where key = ?`, key).Scan(&v)
+	return v
+}
+
+func (s *Store) SetSetting(key, value string) error {
+	_, err := s.db.Exec(`insert into settings(key, value) values(?,?)
+		on conflict(key) do update set value = excluded.value`, key, value)
+	return err
 }
 
 func (s *Store) DeleteProduct(id int64) error {

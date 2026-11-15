@@ -5,6 +5,8 @@ A small, self-hosted price tracker. Paste a product link from a major merchant (
 - Single static binary, no CGO, embedded UI and SQLite (pure Go)
 - Linux, macOS, Windows (amd64 + arm64) and Docker (amd64 + arm64)
 - Extracts prices from schema.org JSON-LD, OpenGraph/product meta tags and common storefront markup
+- Pick your region in Settings: only retailers serving it are offered, and prices default to its currency
+- "Find stores" searches the web for retailers of a niche product in your region and checks each for a readable price
 
 > Some merchants aggressively block automated requests. When a check fails the card shows why and keeps its history.
 
@@ -31,6 +33,7 @@ docker run -d -p 8080:8080 -v pricetrack-data:/data ghcr.io/this-will-be-your-us
 | `REFRESH_INTERVAL` | `6h`    | How often all products are re-checked (min `1m`)        |
 | `AUTH_USER` / `AUTH_PASS` | unset | Enable HTTP basic auth                            |
 | `ALLOW_PRIVATE`    | unset   | Set to `1` to allow fetching private/loopback addresses  |
+| `SEARCH_API_KEY`   | unset   | Brave Search API key for "Find stores" (otherwise keyless DuckDuckGo is used) |
 
 `GET /api/products` returns all products and their price history as JSON.
 

@@ -22,6 +22,7 @@ type App struct {
 	fetch  *Fetcher
 	tpl    *template.Template
 	static http.Handler
+	search Searcher
 	user   string
 	pass   string
 }
@@ -52,6 +53,9 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /products/{id}/refresh", a.refresh)
 	mux.HandleFunc("POST /products/{id}/target", a.target)
 	mux.HandleFunc("POST /products/{id}/delete", a.remove)
+	mux.HandleFunc("GET /find", a.find)
+	mux.HandleFunc("GET /settings", a.settings)
+	mux.HandleFunc("POST /settings", a.saveSettings)
 	mux.HandleFunc("GET /api/products", a.apiList)
 	return a.secure(mux)
 }
@@ -106,6 +110,90 @@ type IndexData struct {
 	Hits     int
 	Msg      string
 	Err      string
+	Region   Region // zero Code when unset
+	Symbol   string
+}
+
+// region returns the configured region. set is false until the user picks one.
+func (a *App) region() (rg Region, set bool) {
+	code := a.st.GetSetting("region")
+	if code == AnyRegion {
+		return Region{Code: AnyRegion, Name: "Worldwide", Currency: "USD"}, true
+	}
+	rg, set = FindRegion(code)
+	return rg, set
+}
+
+func symbol(cur string) string {
+	if s := currencySymbols[cur]; s != "" {
+		return s
+	}
+	return cur
+}
+
+type FindData struct {
+	Query    string
+	Searched bool
+	Offers   []Offer
+	Region   Region
+	Err      string
+}
+
+func (a *App) find(w http.ResponseWriter, r *http.Request) {
+	d := FindData{Query: strings.TrimSpace(r.URL.Query().Get("q"))}
+	rg, set := a.region()
+	if set {
+		d.Region = rg
+	} else {
+		rg = Region{Code: AnyRegion}
+	}
+	if d.Query != "" {
+		d.Searched = true
+		ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+		defer cancel()
+		offers, err := a.FindOffers(ctx, d.Query, rg)
+		if err != nil {
+			d.Err = clip(err.Error())
+		}
+		d.Offers = offers
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := a.tpl.ExecuteTemplate(w, "find.html", d); err != nil {
+		log.Printf("render: %v", err)
+	}
+}
+
+type SettingsData struct {
+	Regions  []Region
+	Current  string
+	Selected Region
+	Msg      string
+	Err      string
+}
+
+func (a *App) settings(w http.ResponseWriter, r *http.Request) {
+	rg, set := a.region()
+	d := SettingsData{Regions: regions, Selected: rg, Msg: clip(r.URL.Query().Get("msg")), Err: clip(r.URL.Query().Get("err"))}
+	if set {
+		d.Current = rg.Code
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := a.tpl.ExecuteTemplate(w, "settings.html", d); err != nil {
+		log.Printf("render: %v", err)
+	}
+}
+
+func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
+	code := r.FormValue("region")
+	if _, ok := FindRegion(code); !ok && code != AnyRegion {
+		redirectTo(w, r, "/settings", "err", "Choose a region from the list")
+		return
+	}
+	if err := a.st.SetSetting("region", code); err != nil {
+		redirectTo(w, r, "/settings", "err", err.Error())
+		return
+	}
+	redirect(w, r, "msg", "Region saved")
 }
 
 func buildView(p *Product, hist []float64) ProductView {
@@ -154,6 +242,10 @@ func (a *App) index(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := IndexData{Total: len(ps), Msg: clip(r.URL.Query().Get("msg")), Err: clip(r.URL.Query().Get("err"))}
+	if rg, set := a.region(); set {
+		d.Region = rg
+	}
+	d.Symbol = symbol(d.Region.Currency)
 	for _, p := range ps {
 		hist, _ := a.st.History(p.ID)
 		v := buildView(p, hist)
@@ -179,7 +271,10 @@ func clip(s string) string {
 }
 
 func redirect(w http.ResponseWriter, r *http.Request, key, msg string) {
-	to := "/"
+	redirectTo(w, r, "/", key, msg)
+}
+
+func redirectTo(w http.ResponseWriter, r *http.Request, to, key, msg string) {
 	if msg != "" {
 		to += "?" + key + "=" + url.QueryEscape(msg)
 	}
@@ -218,6 +313,12 @@ func (a *App) check(ctx context.Context, p *Product) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	res, err := a.fetch.Fetch(ctx, p.URL)
+	if res != nil && res.Currency == "" {
+		res.Currency = "USD"
+		if rg, set := a.region(); set {
+			res.Currency = rg.Currency
+		}
+	}
 	if rerr := a.st.RecordCheck(p.ID, res, err); rerr != nil {
 		log.Printf("record %d: %v", p.ID, rerr)
 	}
@@ -230,6 +331,15 @@ func (a *App) add(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		redirect(w, r, "err", err.Error())
 		return
+	}
+	// Links from "Find retailers" were already filtered for the region (and may be
+	// niche suppliers outside the built-in list), so they skip the allow-list.
+	if rg, set := a.region(); set && rg.Code != AnyRegion && r.FormValue("found") != "1" {
+		if pu, _ := url.Parse(u); pu == nil || !rg.Allows(pu) {
+			redirect(w, r, "err", fmt.Sprintf("%s isn't a supported retailer for %s. Change your region in Settings, or pick Worldwide.",
+				pu.Hostname(), rg.Name))
+			return
+		}
 	}
 	target, err := parseTarget(r.FormValue("target"))
 	if err != nil {
@@ -373,8 +483,11 @@ func (a *App) RefreshLoop(ctx context.Context, every time.Duration) {
 
 // ---- template helpers ----
 
+var currencySymbols = map[string]string{"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CAD": "CA$",
+	"AUD": "A$", "NZD": "NZ$", "INR": "₹", "SGD": "S$"}
+
 func money(cur string, v float64) string {
-	sym := map[string]string{"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CAD": "CA$", "AUD": "A$"}[cur]
+	sym := currencySymbols[cur]
 	if sym == "" {
 		return fmt.Sprintf("%s %.2f", cur, v)
 	}

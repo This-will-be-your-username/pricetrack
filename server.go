@@ -492,6 +492,9 @@ func (a *App) discover(ctx context.Context, id int64) {
 	if serr == nil && len(offers) == 0 {
 		serr = errors.New("no retailers with a readable price found yet — try a more specific name, or add a link yourself")
 	}
+	if serr == nil && len(offers) < targetRetailers {
+		serr = fmt.Errorf("Found %d of %d target retailers — that's all the search turned up. Add links for any others you know.", len(offers), targetRetailers)
+	}
 	if err := a.st.RecordBest(id); err != nil {
 		log.Printf("record best %d: %v", id, err)
 	}

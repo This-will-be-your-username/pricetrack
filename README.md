@@ -8,6 +8,7 @@ A small, self-hosted tool that finds the cheapest retailer for a product. Add a 
 - Extracts prices from schema.org JSON-LD, OpenGraph/product meta tags and common storefront markup
 - Pick your region in Settings: searches only cover stores serving it, and prices default to its currency
 - Results are checked for relevance (model numbers must match) and for a readable price; add your own retailer links too
+- Each scan aims for at least 15 retailers: it tries several phrasings, then asks for the product at each of your region's known retailers in turn. Niche products may turn up fewer, and the card says how many were found
 - Retailers that block automated checks are still listed with a link and a small box: open the page, type the price you see, and it joins the comparison (marked "Manual")
 - Always shows the genuinely cheapest price, even when conditional, labelled with its caveat (member price, subscribe & save / repeat delivery, business, student) alongside the cheapest standard price
 
@@ -35,7 +36,7 @@ docker run -d -p 8080:8080 -v pricetrack-data:/data ghcr.io/this-will-be-your-us
 | `DATA_DIR`         | `data`  | Directory for the SQLite database                        |
 | `AUTH_USER` / `AUTH_PASS` | unset | Enable HTTP basic auth                            |
 | `ALLOW_PRIVATE`    | unset   | Set to `1` to allow fetching private/loopback addresses  |
-| `SEARCH_API_KEY`   | unset   | Brave Search API key for retailer search (otherwise keyless DuckDuckGo is used) |
+| `SEARCH_API_KEY`   | unset   | Brave Search API key for retailer search. Recommended: the keyless fallback (DuckDuckGo) rate-limits quickly and finds fewer retailers |
 
 `GET /api/items` returns every product with its retailers, cheapest price and best-price history as JSON.
 

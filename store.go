@@ -32,6 +32,7 @@ create table if not exists listings(
   last_error   text not null default '',
   caveat       text not null default '',
   std_price    real,
+  manual       integer not null default 0,
   unique(item_id, url)
 );
 create table if not exists history(
@@ -72,6 +73,7 @@ type Listing struct {
 	Caveat      string  // condition on Price, e.g. "Member price"
 	StdPrice    float64 // cheapest unconditional price when Caveat is set
 	HasStd      bool
+	Manual      bool // price was typed in by the user, not read from the page
 }
 
 // Store wraps the SQLite database.
@@ -89,7 +91,7 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 	// Upgrade databases created before conditional pricing existed.
-	for _, q := range []string{`alter table listings add column caveat text not null default ''`, `alter table listings add column std_price real`} {
+	for _, q := range []string{`alter table listings add column caveat text not null default ''`, `alter table listings add column std_price real`, `alter table listings add column manual integer not null default 0`} {
 		if _, err := db.Exec(q); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, err
@@ -179,17 +181,18 @@ func scanItem(r scanner) (*Item, error) {
 	return &it, nil
 }
 
-const listingCols = `id, item_id, url, retailer, title, price, currency, last_checked, last_error, caveat, std_price`
+const listingCols = `id, item_id, url, retailer, title, price, currency, last_checked, last_error, caveat, std_price, manual`
 
 func scanListing(r scanner) (*Listing, error) {
 	var l Listing
 	var price, std sql.NullFloat64
-	var checked int64
-	if err := r.Scan(&l.ID, &l.ItemID, &l.URL, &l.Retailer, &l.Title, &price, &l.Currency, &checked, &l.LastError, &l.Caveat, &std); err != nil {
+	var checked, manual int64
+	if err := r.Scan(&l.ID, &l.ItemID, &l.URL, &l.Retailer, &l.Title, &price, &l.Currency, &checked, &l.LastError, &l.Caveat, &std, &manual); err != nil {
 		return nil, err
 	}
 	l.Price, l.HasPrice = price.Float64, price.Valid
 	l.StdPrice, l.HasStd = std.Float64, std.Valid
+	l.Manual = manual != 0
 	if checked > 0 {
 		l.LastChecked = time.Unix(checked, 0)
 	}
@@ -289,10 +292,27 @@ func (s *Store) UpsertListing(itemID int64, url, retailer, title string, price f
 		on conflict(item_id, url) do update set retailer = excluded.retailer,
 		  title = case when excluded.title != '' then excluded.title else title end,
 		  price = coalesce(excluded.price, price), currency = excluded.currency,
+		  manual = case when excluded.price is null then manual else 0 end,
 		  caveat = case when excluded.price is null then caveat else excluded.caveat end,
 		  std_price = case when excluded.price is null then std_price else excluded.std_price end,
 		  last_checked = excluded.last_checked, last_error = ''`,
 		itemID, url, retailer, title, p, cur, time.Now().Unix(), caveat, sp)
+	return err
+}
+
+// MarkListingError records why a listing's price couldn't be read.
+func (s *Store) MarkListingError(itemID int64, url, msg string) {
+	s.db.Exec(`update listings set last_error = ? where item_id = ? and url = ? and price is null`, clip(msg), itemID, url)
+}
+
+// SetManualPrice stores a price the user checked by hand. A non-positive price clears it.
+func (s *Store) SetManualPrice(id int64, price float64, cur string) error {
+	if price <= 0 {
+		_, err := s.db.Exec(`update listings set price = null, manual = 0, caveat = '', std_price = null where id = ? and manual = 1`, id)
+		return err
+	}
+	_, err := s.db.Exec(`update listings set price = ?, currency = ?, manual = 1, caveat = '', std_price = null,
+		last_checked = ?, last_error = '' where id = ?`, price, cur, time.Now().Unix(), id)
 	return err
 }
 
@@ -311,7 +331,7 @@ func (s *Store) UpdateListing(id int64, r *Result, ferr error) error {
 		sp = r.StdPrice
 	}
 	_, err := s.db.Exec(`update listings set price = ?, currency = ?, title = case when ? != '' then ? else title end,
-		caveat = ?, std_price = ?, last_checked = ?, last_error = '' where id = ?`, r.Price, r.Currency, r.Name, r.Name, r.Caveat, sp, now, id)
+		caveat = ?, std_price = ?, manual = 0, last_checked = ?, last_error = '' where id = ?`, r.Price, r.Currency, r.Name, r.Name, r.Caveat, sp, now, id)
 	return err
 }
 

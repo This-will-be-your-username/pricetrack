@@ -62,6 +62,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /items/{id}/delete", a.remove)
 	mux.HandleFunc("POST /items/{id}/links", a.addLink)
 	mux.HandleFunc("POST /listings/{id}/delete", a.removeListing)
+	mux.HandleFunc("POST /listings/{id}/price", a.setPrice)
 	mux.HandleFunc("GET /settings", a.settings)
 	mux.HandleFunc("POST /settings", a.saveSettings)
 	mux.HandleFunc("GET /api/items", a.apiList)
@@ -484,6 +485,9 @@ func (a *App) discover(ctx context.Context, id int64) {
 		if err := a.st.UpsertListing(id, o.URL, o.Retailer, o.Title, o.Price, o.Currency, o.Caveat, o.StdPrice); err != nil {
 			log.Printf("upsert listing: %v", err)
 		}
+		if o.Blocked {
+			a.st.MarkListingError(id, o.URL, o.Reason)
+		}
 	}
 	if serr == nil && len(offers) == 0 {
 		serr = errors.New("no retailers with a readable price found yet — try a more specific name, or add a link yourself")
@@ -676,6 +680,41 @@ func (a *App) addLink(w http.ResponseWriter, r *http.Request) {
 	redirect(w, r, "msg", "Retailer added")
 }
 
+// setPrice records a price the user checked by hand on a retailer's site.
+func (a *App) setPrice(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	l, err := a.st.GetListing(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	it, err := a.st.GetItem(l.ItemID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	raw := strings.TrimSpace(r.FormValue("price"))
+	price := 0.0
+	if raw != "" {
+		p, ok := parsePrice(raw)
+		if !ok {
+			redirect(w, r, "err", "Enter the price as a number, e.g. 129.95")
+			return
+		}
+		price = p
+	}
+	if err := a.st.SetManualPrice(id, price, it.Currency); err != nil {
+		redirect(w, r, "err", err.Error())
+		return
+	}
+	a.st.RecordBest(it.ID)
+	redirect(w, r, "msg", "Price saved")
+}
+
 func (a *App) removeListing(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -707,6 +746,7 @@ func (a *App) apiList(w http.ResponseWriter, _ *http.Request) {
 		Price    *float64 `json:"price"`
 		Currency string   `json:"currency"`
 		Caveat   string   `json:"caveat,omitempty"`
+		Manual   bool     `json:"manual,omitempty"`
 		StdPrice *float64 `json:"standard_price,omitempty"`
 	}
 	type item struct {
@@ -727,7 +767,7 @@ func (a *App) apiList(w http.ResponseWriter, _ *http.Request) {
 		ls, _ := a.st.ListListings(it.ID)
 		best := bestOf(it.Currency, ls)
 		for _, l := range ls {
-			e := listing{Retailer: l.Retailer, URL: l.URL, Currency: l.Currency, Caveat: l.Caveat}
+			e := listing{Retailer: l.Retailer, URL: l.URL, Currency: l.Currency, Caveat: l.Caveat, Manual: l.Manual}
 			if l.HasStd {
 				sp := l.StdPrice
 				e.StdPrice = &sp

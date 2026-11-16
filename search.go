@@ -152,7 +152,9 @@ type Offer struct {
 	Currency string
 	Caveat   string
 	StdPrice float64
-	InRegion bool // a known retailer for the user's region
+	Blocked  bool   // relevant retailer whose price couldn't be read; needs a manual check
+	Reason   string // why it couldn't be read
+	InRegion bool   // a known retailer for the user's region
 }
 
 var skipHosts = []string{
@@ -237,8 +239,18 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 			defer func() { <-sem }()
 			fctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			res, _ := a.fetch.Fetch(fctx, c.URL)
+			res, ferr := a.fetch.Fetch(fctx, c.URL)
 			if res == nil || res.Price <= 0 {
+				// Couldn't read a price (often anti-bot blocking). Keep local-looking, on-topic
+				// retailers so the user can check them by hand.
+				if c.rank <= 1 && relevant(query, c.Title+" "+c.URL) {
+					c.Blocked = true
+					if ferr != nil {
+						c.Reason = ferr.Error()
+					} else {
+						c.Reason = "no price found on the page"
+					}
+				}
 				return
 			}
 			if !relevant(query, res.Name+" "+c.Title+" "+c.URL) {
@@ -258,10 +270,13 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 	}
 	wg.Wait()
 
-	var offers []Offer
+	var offers, blocked []Offer
 	for _, c := range cands {
-		if c.Price > 0 {
+		switch {
+		case c.Price > 0:
 			offers = append(offers, c.Offer)
+		case c.Blocked && len(blocked) < 6:
+			blocked = append(blocked, c.Offer)
 		}
 	}
 	offers = dropOutliers(offers)
@@ -271,7 +286,7 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 		}
 		return offers[i].InRegion && !offers[j].InRegion
 	})
-	return offers, nil
+	return append(offers, blocked...), nil
 }
 
 var reNonAlnum = regexp.MustCompile("[^a-z0-9]+")

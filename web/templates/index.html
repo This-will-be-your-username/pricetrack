@@ -83,6 +83,14 @@
           <button type="button" class="toggle" aria-expanded="false" aria-controls="rp{{.ID}}" title="Show retailers" aria-label="Show retailers"><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M5 8l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
         <div class="rpanel" id="rp{{.ID}}" hidden>
+        {{if .CCC}}
+        <div class="ccc">
+          <a href="{{.CCC.PageURL}}" target="_blank" rel="noopener noreferrer" title="Open on CamelCamelCamel"><img src="{{.CCC.ChartURL}}" alt="Amazon price history for this product, from CamelCamelCamel" loading="lazy" referrerpolicy="no-referrer" width="300" height="150"></a>
+          <div class="ccc-note">Amazon price history — compare today's price with its usual range. <a href="{{.CCC.PageURL}}" target="_blank" rel="noopener noreferrer">CamelCamelCamel ↗</a></div>
+        </div>
+        {{else if .CCCSearch}}
+        <div class="ccc-note"><a href="{{.CCCSearch}}" target="_blank" rel="noopener noreferrer">Look up Amazon price history on CamelCamelCamel ↗</a> to see what a low price is for this product.</div>
+        {{end}}
         <ul class="rlist">
           {{range .Listings}}
           <li class="{{if .Best}}best-row{{end}}">

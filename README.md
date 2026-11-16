@@ -11,6 +11,7 @@ A small, self-hosted tool that finds the cheapest retailer for a product. Add a 
 - Each scan lists at least 15 retailers: those with a price we could read, topped up with search links to your region's best-known retailers for checking by hand. Searching is throttled (one request at a time, several seconds apart, cached for 12 hours, a few queries per scan) and pauses with backoff if a search engine rate-limits us
 - Retailers that block automated checks are still listed with a link and a small box: open the page, type the price you see, and it joins the comparison (marked "Manual")
 - Compact retailer list: icons mark repeat-delivery / member / business / student prices, a green tick marks prices checked in the last hour, and a pencil on every row reveals a box to set the price by hand (a key sits at the bottom of the page)
+- Context for "is this a low price?": when a product has an Amazon listing, its CamelCamelCamel price-history chart is shown in the retailer panel (loaded by your own browser — the server never fetches CamelCamelCamel, which sits behind a bot challenge); otherwise a CamelCamelCamel search link is offered
 - Always shows the genuinely cheapest price, even when conditional, labelled with its caveat (member price, subscribe & save / repeat delivery, business, student) alongside the cheapest standard price
 
 > Some merchants aggressively block automated requests. When a check fails the card shows why and keeps its history.

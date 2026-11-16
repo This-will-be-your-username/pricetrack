@@ -202,6 +202,8 @@ type ItemView struct {
 	TargetHit bool
 	Searching bool
 	Priced    int
+	CCC       *CCC   // Amazon price history from CamelCamelCamel, when an Amazon listing exists
+	CCCSearch string // CamelCamelCamel search link when it doesn't
 }
 
 type IndexData struct {
@@ -229,6 +231,17 @@ func (a *App) buildItem(it *Item) (ItemView, error) {
 	}
 	hist, _ := a.st.History(it.ID)
 	v := ItemView{Item: it, Trend: "flat", Searching: a.isSearching(it.ID)}
+	region := ""
+	if rg, set := a.region(); set {
+		region = rg.Code
+	}
+	var urls []string
+	for _, l := range ls {
+		urls = append(urls, l.URL)
+	}
+	if v.CCC = cccFor(urls, region); v.CCC == nil {
+		v.CCCSearch = cccSearchURL(region, it.Name)
+	}
 	v.Best = bestOf(it.Currency, ls)
 	hi := 0.0
 	for _, l := range ls {

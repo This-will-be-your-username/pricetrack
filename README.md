@@ -8,7 +8,7 @@ A small, self-hosted tool that finds the cheapest retailer for a product. Add a 
 - Extracts prices from schema.org JSON-LD, OpenGraph/product meta tags and common storefront markup
 - Pick your region in Settings: searches only cover stores serving it, and prices default to its currency
 - Results are checked for relevance (model numbers must match) and for a readable price; add your own retailer links too
-- Each scan aims for at least 15 retailers: it tries several phrasings, then asks for the product at each of your region's known retailers in turn. Niche products may turn up fewer, and the card says how many were found
+- Each scan lists at least 15 retailers: those with a price we could read, topped up with search links to your region's best-known retailers for checking by hand. Searching is throttled (one request at a time, several seconds apart, cached for 12 hours, a few queries per scan) and pauses with backoff if a search engine rate-limits us
 - Retailers that block automated checks are still listed with a link and a small box: open the page, type the price you see, and it joins the comparison (marked "Manual")
 - Compact retailer list: icons mark repeat-delivery / member / business / student prices, a green tick marks prices checked in the last hour, and a pencil on every row reveals a box to set the price by hand (a key sits at the bottom of the page)
 - Always shows the genuinely cheapest price, even when conditional, labelled with its caveat (member price, subscribe & save / repeat delivery, business, student) alongside the cheapest standard price

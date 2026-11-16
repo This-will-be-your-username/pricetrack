@@ -90,6 +90,7 @@
               <a href="{{.URL}}" target="_blank" rel="noopener noreferrer" title="{{.Title}}">{{if .Retailer}}{{.Retailer}}{{else}}Link{{end}}</a>
               {{if .Caveat}}<span class="tag tag-{{iconFor .Caveat}}" title="{{.Caveat}}{{if .HasStd}} · standard price {{money .Currency .StdPrice}}{{end}}">{{template "icon" (iconFor .Caveat)}}</span>{{end}}
               {{if .Manual}}<span class="tag tag-user" title="Price entered by you {{ago .LastChecked}}">{{template "icon" "user"}}</span>{{end}}
+              {{if .Lookup}}<span class="tag tag-search" title="Link to this retailer's search. Open it, find the product, then enter its price with the pencil.">{{template "icon" "search"}}</span>{{end}}
               {{if .Fresh}}<span class="tag tag-tick" title="Price checked {{ago .LastChecked}}">{{template "icon" "tick"}}</span>{{end}}
               {{if .HasPrice}}<span class="rp">{{money .Currency .Price}}</span>{{else}}<span class="rp none" title="{{.LastError}}">no price</span>{{end}}
               <button type="button" class="icon edit" title="Edit price" aria-label="Edit price at {{.Retailer}}">{{template "icon" "pencil"}}</button>
@@ -135,6 +136,7 @@
   <span>{{template "icon" "business"}} Business customers only</span>
   <span>{{template "icon" "student"}} Student price</span>
   <span>{{template "icon" "user"}} Price entered by you</span>
+  <span>{{template "icon" "search"}} Link to a retailer's search — check by hand</span>
   <span>{{template "icon" "pencil"}} Edit a price by hand</span>
 </section>
 {{end}}

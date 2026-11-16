@@ -208,3 +208,7 @@ button.icon.edit { padding: 4px 6px; }
   padding: 16px 20px 4px; border-top: 1px solid var(--line); margin-top: 8px; }
 .key b { color: var(--text); }
 .key span { display: inline-flex; align-items: center; gap: 6px; }
+
+.tag-search { background: #e8eaf0; color: #4b5563; }
+@media (prefers-color-scheme: dark) { .tag-search { background: #262a31; color: #aab2c0; } }
+.errline { color: var(--muted); }

@@ -505,16 +505,60 @@ func (a *App) discover(ctx context.Context, id int64) {
 			a.st.MarkListingError(id, o.URL, o.Reason)
 		}
 	}
-	if serr == nil && len(offers) == 0 {
-		serr = errors.New("no retailers with a readable price found yet — try a more specific name, or add a link yourself")
-	}
-	if serr == nil && len(offers) < targetRetailers {
-		serr = fmt.Errorf("Found %d of %d target retailers — that's all the search turned up. Add links for any others you know.", len(offers), targetRetailers)
+	a.fillLookups(id, it.Name, rg)
+	if serr != nil {
+		var rl *RateLimitedError
+		if errors.As(serr, &rl) {
+			serr = fmt.Errorf("The search engine is rate-limiting this server, so only retailer links are listed. Searching resumes after %s.", rl.Until.Format("15:04"))
+		}
+	} else if n := a.priced(id); n < targetRetailers {
+		serr = fmt.Errorf("Found prices at %d retailers; the rest are links for you to check by hand.", n)
 	}
 	if err := a.st.RecordBest(id); err != nil {
 		log.Printf("record best %d: %v", id, err)
 	}
 	a.st.MarkSearched(id, serr)
+}
+
+// priced counts the item's listings with a price.
+func (a *App) priced(id int64) int {
+	ls, _ := a.st.ListListings(id)
+	n := 0
+	for _, l := range ls {
+		if l.HasPrice {
+			n++
+		}
+	}
+	return n
+}
+
+// fillLookups tops the item's list up to targetRetailers with search links for the
+// region's best-known retailers (no search engine involved), and retires lookup
+// links for retailers where a real product page has since been found.
+func (a *App) fillLookups(id int64, query string, rg Region) {
+	ls, err := a.st.ListListings(id)
+	if err != nil {
+		return
+	}
+	real := map[string]bool{}
+	for _, l := range ls {
+		if !l.Lookup {
+			real[l.Retailer] = true
+		}
+	}
+	var have []string
+	for _, l := range ls {
+		if l.Lookup && !l.HasPrice && real[l.Retailer] {
+			a.st.DeleteListingQuiet(l.ID)
+			continue
+		}
+		have = append(have, l.URL)
+	}
+	for _, o := range lookupOffers(query, rg, have, a.st.Dismissed(id), targetRetailers) {
+		if err := a.st.UpsertLookup(id, o.URL, o.Retailer, o.Title, o.Reason); err != nil {
+			log.Printf("upsert lookup: %v", err)
+		}
+	}
 }
 
 func (a *App) startUpdate(r *http.Request, id int64, refresh bool) {

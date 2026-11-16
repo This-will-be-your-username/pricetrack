@@ -33,7 +33,13 @@ create table if not exists listings(
   caveat       text not null default '',
   std_price    real,
   manual       integer not null default 0,
+  lookup       integer not null default 0,
   unique(item_id, url)
+);
+create table if not exists dismissed(
+  item_id integer not null references items(id) on delete cascade,
+  url     text not null,
+  primary key(item_id, url)
 );
 create table if not exists history(
   id      integer primary key autoincrement,
@@ -74,6 +80,7 @@ type Listing struct {
 	StdPrice    float64 // cheapest unconditional price when Caveat is set
 	HasStd      bool
 	Manual      bool // price was typed in by the user, not read from the page
+	Lookup      bool // a search link for manual lookup rather than a found product page
 }
 
 // Fresh reports whether the price was read or entered within the last hour.
@@ -96,7 +103,7 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 	// Upgrade databases created before conditional pricing existed.
-	for _, q := range []string{`alter table listings add column caveat text not null default ''`, `alter table listings add column std_price real`, `alter table listings add column manual integer not null default 0`} {
+	for _, q := range []string{`alter table listings add column caveat text not null default ''`, `alter table listings add column std_price real`, `alter table listings add column manual integer not null default 0`, `alter table listings add column lookup integer not null default 0`} {
 		if _, err := db.Exec(q); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, err
@@ -186,18 +193,19 @@ func scanItem(r scanner) (*Item, error) {
 	return &it, nil
 }
 
-const listingCols = `id, item_id, url, retailer, title, price, currency, last_checked, last_error, caveat, std_price, manual`
+const listingCols = `id, item_id, url, retailer, title, price, currency, last_checked, last_error, caveat, std_price, manual, lookup`
 
 func scanListing(r scanner) (*Listing, error) {
 	var l Listing
 	var price, std sql.NullFloat64
-	var checked, manual int64
-	if err := r.Scan(&l.ID, &l.ItemID, &l.URL, &l.Retailer, &l.Title, &price, &l.Currency, &checked, &l.LastError, &l.Caveat, &std, &manual); err != nil {
+	var checked, manual, lookup int64
+	if err := r.Scan(&l.ID, &l.ItemID, &l.URL, &l.Retailer, &l.Title, &price, &l.Currency, &checked, &l.LastError, &l.Caveat, &std, &manual, &lookup); err != nil {
 		return nil, err
 	}
 	l.Price, l.HasPrice = price.Float64, price.Valid
 	l.StdPrice, l.HasStd = std.Float64, std.Valid
 	l.Manual = manual != 0
+	l.Lookup = lookup != 0
 	if checked > 0 {
 		l.LastChecked = time.Unix(checked, 0)
 	}
@@ -279,6 +287,8 @@ func (s *Store) GetListing(id int64) (*Listing, error) {
 }
 
 func (s *Store) DeleteListing(id int64) error {
+	// Remember removed lookup links so later scans don't offer them again.
+	s.db.Exec(`insert or ignore into dismissed(item_id, url) select item_id, url from listings where id = ? and lookup = 1`, id)
 	_, err := s.db.Exec(`delete from listings where id = ?`, id)
 	return err
 }
@@ -303,6 +313,33 @@ func (s *Store) UpsertListing(itemID int64, url, retailer, title string, price f
 		  last_checked = excluded.last_checked, last_error = ''`,
 		itemID, url, retailer, title, p, cur, time.Now().Unix(), caveat, sp)
 	return err
+}
+
+// DeleteListingQuiet removes a listing without remembering it as dismissed.
+func (s *Store) DeleteListingQuiet(id int64) { s.db.Exec(`delete from listings where id = ?`, id) }
+
+// UpsertLookup adds a "search this retailer" link for manual lookup, unless it already exists.
+func (s *Store) UpsertLookup(itemID int64, url, retailer, title, note string) error {
+	_, err := s.db.Exec(`insert or ignore into listings(item_id, url, retailer, title, currency, last_error, lookup)
+		values(?,?,?,?,'',?,1)`, itemID, url, retailer, title, clip(note))
+	return err
+}
+
+// Dismissed returns the lookup links the user removed for an item.
+func (s *Store) Dismissed(itemID int64) map[string]bool {
+	out := map[string]bool{}
+	rows, err := s.db.Query(`select url from dismissed where item_id = ?`, itemID)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var u string
+		if rows.Scan(&u) == nil {
+			out[u] = true
+		}
+	}
+	return out
 }
 
 // MarkListingError records why a listing's price couldn't be read.

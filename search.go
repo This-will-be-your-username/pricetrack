@@ -28,9 +28,9 @@ type Searcher interface {
 // keyless DuckDuckGo HTML scraper.
 func NewSearcher(f *Fetcher, braveKey string) Searcher {
 	if braveKey != "" {
-		return &braveSearch{c: f.client, key: braveKey}
+		return NewThrottledSearcher(&braveSearch{c: f.client, key: braveKey}, 1200*time.Millisecond)
 	}
-	return &ddgSearch{c: f.client}
+	return NewThrottledSearcher(&ddgSearch{c: f.client}, 6*time.Second)
 }
 
 // ddg "kl" region codes; Brave uses the lowercase country code.
@@ -58,6 +58,10 @@ func get(ctx context.Context, c *http.Client, u string, hdr map[string]string) (
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
+		switch resp.StatusCode {
+		case http.StatusAccepted, http.StatusForbidden, http.StatusTooManyRequests, http.StatusServiceUnavailable:
+			return b, fmt.Errorf("search provider returned HTTP %d: %w", resp.StatusCode, errRateLimited)
+		}
 		return b, fmt.Errorf("search provider returned HTTP %d", resp.StatusCode)
 	}
 	return b, nil
@@ -103,7 +107,10 @@ func (d *ddgSearch) Search(ctx context.Context, q, region string) ([]SearchResul
 		out = append(out, SearchResult{Title: html.UnescapeString(reTag.ReplaceAllString(m[1], "")), URL: href})
 	}
 	if len(out) == 0 {
-		return nil, errors.New("the search engine returned no results (it may be rate-limiting; set SEARCH_API_KEY to use Brave Search)")
+		if strings.Contains(string(b), "anomaly") || strings.Contains(strings.ToLower(string(b)), "captcha") {
+			return nil, fmt.Errorf("search engine challenge page: %w", errRateLimited)
+		}
+		return nil, errors.New("the search engine returned no results")
 	}
 	return out, nil
 }
@@ -152,6 +159,7 @@ type Offer struct {
 	Currency string
 	Caveat   string
 	StdPrice float64
+	Lookup   bool   // a direct search link for manual lookup, not a found product
 	Blocked  bool   // relevant retailer whose price couldn't be read; needs a manual check
 	Reason   string // why it couldn't be read
 	InRegion bool   // a known retailer for the user's region
@@ -171,33 +179,13 @@ func otherRegionOnly(u *url.URL, rg Region) bool {
 	return retailerName(u) != ""
 }
 
-// searchRetry retries rate-limited searches with a growing pause.
-func searchRetry(ctx context.Context, s Searcher, q, region string) ([]SearchResult, error) {
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		var rs []SearchResult
-		if rs, err = s.Search(ctx, q, region); err == nil {
-			return rs, nil
-		}
-		msg := err.Error()
-		if !strings.Contains(msg, "HTTP 202") && !strings.Contains(msg, "HTTP 429") && !strings.Contains(msg, "no results") {
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(time.Duration(4*(attempt+1)) * time.Second):
-		}
-	}
-	return nil, err
-}
-
-// targetRetailers is how many retailers a scan tries to come back with. Niche
-// products may have fewer; the search then stops once it runs out of places to look.
+// targetRetailers is how many retailers a scan tries to list. Retailers whose
+// price we could read come first; the rest of the 15 are filled with direct
+// "search this retailer" links for manual lookup (see lookupOffers).
 const targetRetailers = 15
 
-// searchPause spaces out consecutive searches; search engines rate-limit bursts.
-var searchPause = 1500 * time.Millisecond
+// maxSearchesPerScan bounds how many search-engine requests one scan may make.
+const maxSearchesPerScan = 4
 
 type cand struct {
 	Offer
@@ -207,9 +195,11 @@ type cand struct {
 func (c *cand) kept() bool { return c.Price > 0 || c.Blocked }
 
 // FindOffers searches the web for retailers selling query, keeps those relevant
-// to rg, and verifies each by fetching the page and extracting a price. It keeps
-// widening the search (query variants, then the region's known retailers one by
-// one) until it has targetRetailers or runs out of places to look.
+// to rg, and verifies each by fetching the page and extracting a price.
+//
+// Searching is deliberately frugal (a handful of queries per scan, all routed
+// through the throttled searcher). If the search engine rate-limits us, the
+// offers found so far are still returned together with the error.
 func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer, error) {
 	where := ""
 	if rg.Code != AnyRegion && rg.Name != "" {
@@ -217,8 +207,8 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 	}
 	seen := map[string]bool{} // hosts already considered
 	var all []*cand
-	var firstErr error
-	searched := false
+	var searchErr error
+	searched, budget := false, maxSearchesPerScan
 
 	count := func() int {
 		n := 0
@@ -230,63 +220,51 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 		return n
 	}
 
-	// collect runs the searches (a couple at a time) and returns unseen, in-region candidates.
-	collect := func(queries []string, onlyDomains []string) []*cand {
-		results := make([][]SearchResult, len(queries))
-		// Searches run one at a time with a pause between them: search engines
-		// rate-limit bursts (HTTP 202/429), so being gentle gets more results.
-		for i, q := range queries {
-			if i > 0 {
-				select {
-				case <-ctx.Done():
-				case <-time.After(searchPause):
-				}
-			}
-			rs, err := searchRetry(ctx, a.search, q, rg.Code)
-			if err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			searched = true
-			results[i] = rs
+	// collect runs one search and returns unseen, in-region candidates.
+	collect := func(q string) []*cand {
+		if budget <= 0 || searchErr != nil {
+			return nil
 		}
+		budget--
+		rs, err := a.search.Search(ctx, q, rg.Code)
+		if err != nil {
+			searchErr = err
+			return nil
+		}
+		searched = true
 
 		var out []*cand
 		tld := strings.ToLower(rg.Code)
-		for _, rs := range results {
-			for _, r := range rs {
-				u, err := url.Parse(r.URL)
-				if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-					continue
-				}
-				host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
-				skip := false
-				for _, s := range skipHosts {
-					if strings.Contains(host, s) {
-						skip = true
-					}
-				}
-				if skip || seen[host] {
-					continue
-				}
-				if rg.Code != AnyRegion && otherRegionOnly(u, rg) {
-					continue // e.g. don't offer US retailers to AU users
-				}
-				seen[host] = true
-				c := &cand{Offer: Offer{Retailer: MerchantOf(r.URL), Host: host, Title: r.Title, URL: r.URL}}
-				c.InRegion = rg.Code != AnyRegion && rg.Allows(u)
-				switch {
-				case c.InRegion:
-					c.rank = 0
-				case tld != "" && (strings.HasSuffix(host, "."+tld) || strings.Contains(host, ".com."+tld) || strings.Contains(host, ".co."+tld)):
-					c.rank = 1
-				default:
-					c.rank = 2
-				}
-				out = append(out, c)
+		for _, r := range rs {
+			u, err := url.Parse(r.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+				continue
 			}
+			host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+			skip := false
+			for _, s := range skipHosts {
+				if strings.Contains(host, s) {
+					skip = true
+				}
+			}
+			if skip || seen[host] {
+				continue
+			}
+			if rg.Code != AnyRegion && otherRegionOnly(u, rg) {
+				continue // e.g. don't offer US retailers to AU users
+			}
+			seen[host] = true
+			c := &cand{Offer: Offer{Retailer: MerchantOf(r.URL), Host: host, Title: r.Title, URL: r.URL}}
+			c.InRegion = rg.Code != AnyRegion && rg.Allows(u)
+			switch {
+			case c.InRegion:
+				c.rank = 0
+			case tld != "" && (strings.HasSuffix(host, "."+tld) || strings.Contains(host, ".com."+tld) || strings.Contains(host, ".co."+tld)):
+				c.rank = 1
+			default:
+				c.rank = 2
+			}
+			out = append(out, c)
 		}
 		sort.SliceStable(out, func(i, j int) bool { return out[i].rank < out[j].rank })
 		return out
@@ -294,6 +272,9 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 
 	// verify fetches each candidate concurrently, keeping pages with a readable price.
 	verify := func(cs []*cand) {
+		if len(cs) > 25 {
+			cs = cs[:25]
+		}
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 6)
 		for _, c := range cs {
@@ -337,24 +318,14 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 		all = append(all, cs...)
 	}
 
-	cap := func(cs []*cand, n int) []*cand {
-		if len(cs) > n {
-			return cs[:n]
-		}
-		return cs
-	}
+	// Round 1: two phrasings of the same question.
+	verify(collect(query + " buy online" + where))
+	verify(collect(query + " price" + where))
 
-	// Round 1: several phrasings of the same question.
-	verify(cap(collect([]string{
-		query + " buy online" + where,
-		query + " price" + where,
-		query + where + " in stock shop",
-		query + " best price compare",
-	}, nil), 30))
-
-	// Later rounds: ask for the product at the region's known retailers we haven't met yet.
-	if rg.Code != AnyRegion {
-		var pending []Retailer
+	// Round 2: one combined query per handful of the region's known retailers we haven't met
+	// ("site:a.com OR site:b.com ...") — far fewer requests than one search per retailer.
+	if rg.Code != AnyRegion && count() < targetRetailers {
+		var doms []string
 		for _, rt := range rg.Retailers {
 			met := false
 			for _, c := range all {
@@ -364,30 +335,19 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 				}
 			}
 			if !met {
-				pending = append(pending, rt)
-			}
-		}
-		for len(pending) > 0 && count() < targetRetailers && ctx.Err() == nil {
-			n := min(8, len(pending))
-			var qs []string
-			for _, rt := range pending[:n] {
 				dom, _, _ := strings.Cut(rt.Domains[0], "/")
-				qs = append(qs, query+" site:"+dom)
+				doms = append(doms, "site:"+dom)
 			}
-			pending = pending[n:]
-			verify(cap(collect(qs, nil), 12))
 		}
-	} else {
-		for _, extra := range []string{" deals", " reviews where to buy", " free shipping"} {
-			if count() >= targetRetailers || ctx.Err() != nil {
-				break
-			}
-			verify(cap(collect([]string{query + extra}, nil), 12))
+		for len(doms) > 0 && budget > 0 && count() < targetRetailers {
+			n := min(6, len(doms))
+			verify(collect(query + " (" + strings.Join(doms[:n], " OR ") + ")"))
+			doms = doms[n:]
 		}
 	}
 
-	if !searched && firstErr != nil {
-		return nil, firstErr
+	if !searched && searchErr != nil {
+		return nil, searchErr
 	}
 
 	var offers, blocked []Offer
@@ -406,7 +366,46 @@ func (a *App) FindOffers(ctx context.Context, query string, rg Region) ([]Offer,
 		}
 		return offers[i].InRegion && !offers[j].InRegion
 	})
-	return append(offers, blocked...), nil
+	return append(offers, blocked...), searchErr
+}
+
+// lookupOffers returns direct "search this retailer" links for the region's
+// best-known retailers that aren't in have yet, so a product always lists the
+// obvious places to check by hand — with no search engine involved. It adds
+// links until have plus the new ones reach want.
+func lookupOffers(query string, rg Region, have []string, dismissed map[string]bool, want int) []Offer {
+	if rg.Code == AnyRegion || len(rg.Retailers) == 0 {
+		return nil
+	}
+	var urls []*url.URL
+	for _, h := range have {
+		if u, err := url.Parse(h); err == nil {
+			urls = append(urls, u)
+		}
+	}
+	n := len(have)
+	var out []Offer
+	for _, rt := range rg.Retailers {
+		if n >= want {
+			break
+		}
+		met := false
+		for _, u := range urls {
+			if rt.matches(u) {
+				met = true
+				break
+			}
+		}
+		link := rt.SearchURL(query)
+		if met || dismissed[link] {
+			continue
+		}
+		dom, _, _ := strings.Cut(rt.Domains[0], "/")
+		out = append(out, Offer{Retailer: rt.Name, Host: dom, URL: link, Title: query, Lookup: true, InRegion: true,
+			Reason: "Not checked automatically — open the page, find the product, and enter its price with the pencil."})
+		n++
+	}
+	return out
 }
 
 var reNonAlnum = regexp.MustCompile("[^a-z0-9]+")

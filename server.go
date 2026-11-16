@@ -38,6 +38,7 @@ func NewApp(st *Store, f *Fetcher, web fs.FS, user, pass string) (*App, error) {
 		"ago":     ago,
 		"abs":     math.Abs,
 		"initial": initial,
+		"iconFor": iconFor,
 	}).ParseFS(web, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -385,6 +386,21 @@ func cleanTitle(t string) string {
 		t = string([]rune(t)[:110])
 	}
 	return t
+}
+
+// iconFor maps a price caveat to its icon name (see the key on the main page).
+func iconFor(caveat string) string {
+	switch caveat {
+	case cvRepeat:
+		return "repeat"
+	case cvMember:
+		return "member"
+	case cvBusiness:
+		return "business"
+	case cvStudent:
+		return "student"
+	}
+	return "tag"
 }
 
 func initial(s string) string {

@@ -1,0 +1,12 @@
+{{define "sprite"}}<svg class="sprite" aria-hidden="true" focusable="false"><defs>
+<symbol id="i-repeat" viewBox="0 0 20 20"><path d="M4 9a6 6 0 0 1 10.5-3.5L16 7M16 3v4h-4M16 11a6 6 0 0 1-10.5 3.5L4 13M4 17v-4h4"/></symbol>
+<symbol id="i-member" viewBox="0 0 20 20"><rect x="2" y="4.5" width="16" height="11" rx="2"/><path d="M2 8.5h16M5 12.5h4"/></symbol>
+<symbol id="i-business" viewBox="0 0 20 20"><rect x="3" y="7" width="14" height="10" rx="2"/><path d="M7 7V5.5A1.5 1.5 0 0 1 8.5 4h3A1.5 1.5 0 0 1 13 5.5V7M3 11.5h14"/></symbol>
+<symbol id="i-student" viewBox="0 0 20 20"><path d="M10 4L2 8l8 4 8-4-8-4zM5.5 10v4c0 1 2 2 4.5 2s4.5-1 4.5-2v-4"/></symbol>
+<symbol id="i-user" viewBox="0 0 20 20"><circle cx="10" cy="7" r="3"/><path d="M4 17c0-3 2.7-5 6-5s6 2 6 5"/></symbol>
+<symbol id="i-pencil" viewBox="0 0 20 20"><path d="M3 17l1-4L14 3l3 3L7 16l-4 1zM12 5l3 3"/></symbol>
+<symbol id="i-tick" viewBox="0 0 20 20"><path d="M4 10.5l4 4 8-9"/></symbol>
+<symbol id="i-tag" viewBox="0 0 20 20"><circle cx="10" cy="10" r="3"/></symbol>
+</defs></svg>{{end}}
+
+{{define "icon"}}<svg class="ic ic-{{.}}" viewBox="0 0 20 20" width="15" height="15" aria-hidden="true"><use href="#i-{{.}}"/></svg>{{end}}

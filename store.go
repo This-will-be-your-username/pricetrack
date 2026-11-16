@@ -76,6 +76,11 @@ type Listing struct {
 	Manual      bool // price was typed in by the user, not read from the page
 }
 
+// Fresh reports whether the price was read or entered within the last hour.
+func (l *Listing) Fresh() bool {
+	return l.HasPrice && l.LastError == "" && !l.LastChecked.IsZero() && time.Since(l.LastChecked) < time.Hour
+}
+
 // Store wraps the SQLite database.
 type Store struct{ db *sql.DB }
 

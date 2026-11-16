@@ -56,3 +56,12 @@ function poll() {
 if (document.body.hasAttribute('data-searching')) {
   setTimeout(poll, 4000);
 }
+
+// Pencil button reveals the price box for that retailer; it stays hidden otherwise.
+document.addEventListener('click', (e) => {
+  const edit = e.target.closest('.edit');
+  if (!edit) return;
+  const form = edit.closest('li').querySelector('.pform');
+  form.hidden = !form.hidden;
+  if (!form.hidden) form.querySelector('input').focus();
+});

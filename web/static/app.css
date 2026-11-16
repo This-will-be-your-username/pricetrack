@@ -173,3 +173,38 @@ select { flex: 1; font: inherit; color: var(--text); background: var(--surface);
 .toggle:hover { color: var(--text); opacity: 1; }
 .toggle svg { transition: transform .15s; }
 .toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.ic { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; vertical-align: -3px; }
+.tag { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%;
+  flex: none; background: var(--chip); color: var(--muted); }
+.tag-repeat { background: #fff4d6; color: #8a5a00; }
+.tag-member { background: #ece6ff; color: #5b3fc4; }
+.tag-business { background: #e2eefc; color: #1d5fb4; }
+.tag-student { background: #dff5f1; color: #0b7a6b; }
+.tag-tick { background: var(--good-bg); color: var(--good); }
+@media (prefers-color-scheme: dark) {
+  .tag-repeat { background: #3a2e10; color: #f5c451; }
+  .tag-member { background: #2a2447; color: #b9a6ff; }
+  .tag-business { background: #15283f; color: #7db4f5; }
+  .tag-student { background: #10312d; color: #5fd4c2; }
+}
+.caveat .ic { margin-right: 2px; }
+.price-row .tag { align-self: center; }
+
+.rlist li { display: block; padding: 4px 6px; }
+.rrow { display: flex; align-items: center; gap: 6px; }
+.rrow a { flex: 1; min-width: 0; }
+.rrow form { margin: 0; display: flex; }
+.pform { display: flex; align-items: center; gap: 6px; padding: 6px 0 2px; }
+.pform[hidden] { display: none !important; }
+.pform input { flex: 1; min-width: 0; width: auto; padding: 5px 9px; font-size: 13px; border-radius: 8px; }
+.pform .ghost { padding: 5px 12px; font-size: 13px; }
+.open-link { font-size: 12px; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.open-link:hover { color: var(--accent); }
+button.icon.edit { padding: 4px 6px; }
+
+.key { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; color: var(--muted); font-size: 12px;
+  padding: 16px 20px 4px; border-top: 1px solid var(--line); margin-top: 8px; }
+.key b { color: var(--text); }
+.key span { display: inline-flex; align-items: center; gap: 6px; }
